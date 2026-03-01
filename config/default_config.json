@@ -1,0 +1,71 @@
+{
+  "version": "2.0.0",
+  "hardware": {
+    "sensor": {
+      "type": "default",
+      "port": "COM3",
+      "baudrate": 115200,
+      "timeout": 1.0,
+      "sampling_rate": 100,
+      "data_format": "raw",
+      "calibration_enabled": true,
+      "model": "M2020_3x3",
+      "num_taxels": 9,
+      "rows": 3,
+      "cols": 3,
+      "pressure_range": [
+        0,
+        100
+      ],
+      "resolution": 0.1
+    },
+    "servo": {
+      "type": "st3215",
+      "port": "COM4",
+      "baudrate": 115200,
+      "timeout": 1.0,
+      "min_angle": 0,
+      "max_angle": 180,
+      "speed": 50,
+      "torque_limit": 1.0,
+      "position_kp": 1.0,
+      "position_ki": 0.1,
+      "position_kd": 0.05
+    },
+    "auto_connect": true,
+    "connection_timeout": 5.0
+  },
+  "algorithm": {
+    "data_dimensions": [
+      3,
+      3
+    ],
+    "feature_size": 9,
+    "use_spatial_features": true,
+    "use_temporal_features": true,
+    "temporal_window": 10,
+    "feature_extraction_method": "pca",
+    "clustering_enabled": true,
+    "clustering_method": "kmeans",
+    "num_clusters": 3
+  },
+  "ui": {
+    "window_width": 1200,
+    "window_height": 800,
+    "control_panel_width": 300,
+    "data_refresh_rate": 30,
+    "theme": "light",
+    "language": "zh_CN",
+    "show_grid": true,
+    "auto_save_data": false,
+    "save_interval": 60,
+    "sensor_grid_size": [
+      3,
+      3
+    ],
+    "show_tactile_grid": true
+  },
+  "demo_modes": {},
+  "sensor_type": "default",
+  "deep_learning": null
+}

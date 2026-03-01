@@ -1,0 +1,280 @@
+{
+  "version": "3.0.0",
+  "hardware": {
+    "sensor": {
+      "type": "default",
+      "port": "COM3",
+      "baudrate": 115200,
+      "timeout": 0.1,
+      "retry_count": 3,
+      "sampling_rate": 100,
+      "data_format": "raw",
+      "calibration_enabled": true,
+      "model": "M2020_3x3",
+      "num_taxels": 9,
+      "rows": 3,
+      "cols": 3,
+      "pressure_range": [
+        0,
+        100
+      ],
+      "resolution": 0.1,
+      "sensitivity": 1.0,
+      "offset": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "gain": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "filter_enabled": true,
+      "filter_type": "median",
+      "filter_window": 5,
+      "filter_window_size": 5,
+      "low_pass_cutoff": 50.0,
+      "high_pass_cutoff": 0.1,
+      "moving_average_window": 10,
+      "normalize_data": true,
+      "remove_offset": true,
+      "dynamic_range_adjustment": true,
+      "force_scale": 10.0,
+      "max_pressure_range": 100.0
+    },
+    "servo": {
+      "type": "st3215",
+      "port": "COM4",
+      "baudrate": 115200,
+      "timeout": 1.0,
+      "retry_count": 3,
+      "min_angle": 0,
+      "max_angle": 180,
+      "home_position": 90,
+      "speed": 50,
+      "acceleration": 50,
+      "deceleration": 50,
+      "torque": 1.0,
+      "torque_limit": 1.0,
+      "max_torque": 2.0,
+      "current_limit": 1.0,
+      "max_force": 10.0,
+      "position_kp": 1.0,
+      "position_ki": 0.1,
+      "position_kd": 0.05,
+      "velocity_kp": 0.5,
+      "velocity_ki": 0.01,
+      "velocity_kd": 0.02,
+      "current_kp": 0.3,
+      "current_ki": 0.01,
+      "current_kd": 0.001,
+      "feedforward_velocity": 0.0,
+      "feedforward_acceleration": 0.0,
+      "deadband": 1.0,
+      "smooth_factor": 0.1,
+      "backlash_compensation": 0.0
+    },
+    "auto_connect": true,
+    "connection_timeout": 5.0,
+    "emergency_timeout": 5.0,
+    "max_force_limit": 50.0,
+    "safety_enabled": true
+  },
+  "algorithm": {
+    "data_dimensions": [
+      3,
+      3
+    ],
+    "feature_size": 9,
+    "use_spatial_features": true,
+    "use_temporal_features": true,
+    "temporal_window": 10,
+    "feature_extraction_method": "pca",
+    "clustering_enabled": true,
+    "clustering_method": "kmeans",
+    "num_clusters": 3,
+    "vision_algorithm": {
+      "object_detection": true,
+      "pose_estimation": true,
+      "segmentation": false,
+      "tracking": true
+    },
+    "motion_planning": {
+      "use_moveit": false,
+      "planner_type": "rrt_connect",
+      "collision_checking": true,
+      "optimization_enabled": true
+    }
+  },
+  "ui": {
+    "window_width": 1200,
+    "window_height": 800,
+    "control_panel_width": 300,
+    "data_refresh_rate": 30,
+    "theme": "light",
+    "language": "zh_CN",
+    "show_grid": true,
+    "auto_save_data": false,
+    "save_interval": 60,
+    "sensor_grid_size": [
+      3,
+      3
+    ],
+    "show_tactile_grid": true,
+    "arm_ui": {
+      "show_arm_status": true,
+      "show_joint_states": true,
+      "show_trajectory": true,
+      "show_workspace": false
+    },
+    "vision_ui": {
+      "show_camera_view": true,
+      "show_point_cloud": false,
+      "show_detection_results": true,
+      "camera_view_size": [
+        640,
+        480
+      ]
+    },
+    "simulation_ui": {
+      "show_simulation_view": false,
+      "physics_debug": false,
+      "show_collision_boxes": true
+    }
+  },
+  "integration": {
+    "arm_integration_enabled": true,
+    "arm_config_path": null,
+    "vision_integration_enabled": true,
+    "camera_config_path": null,
+    "simulation_integration_enabled": true,
+    "simulation_config_path": null,
+    "planning_integration_enabled": true,
+    "planning_config_path": null,
+    "task_integration_enabled": true,
+    "task_config_path": null,
+    "communication": {
+      "protocol": "direct",
+      "sync_rate": 100,
+      "timeout": 5.0
+    },
+    "coordinate_systems": {
+      "world_frame": "base_link",
+      "tool_frame": "gripper_tcp",
+      "camera_frame": "camera_color_optical_frame",
+      "hand_eye_calibrated": false
+    }
+  },
+  "demo_modes": {},
+  "sensor_type": "default",
+  "deep_learning": null,
+  "learm_arm": {
+    "CONNECTION": {
+      "type": "simulation"
+    },
+    "PHYSICAL": {
+      "dof": 6
+    },
+    "SAFETY": {
+      "workspace_limits": {
+        "x": [
+          -0.9,
+          0.9
+        ],
+        "y": [
+          -0.9,
+          0.9
+        ],
+        "z": [
+          0,
+          0.9
+        ]
+      }
+    }
+  },
+  "camera": {
+    "HARDWARE": {
+      "primary_camera": {
+        "type": "realsense",
+      "resolution": [
+        1280,
+        800
+      ],
+        "fps": 30,
+        "camera_id": 0,
+        "serial": "333422301846",
+        "enable_depth": true,
+        "color_format": "rgb8",
+        "fov": 90
+      },
+      "depth_camera": {
+        "enabled": true,
+      "depth_resolution": [
+        1280,
+        720
+      ],
+        "depth_clipping": [
+          0.6,
+          6.0
+        ],
+        "depth_format": "z16"
+      }
+    }
+  },
+  "simulation": {
+    "ENGINE": {
+      "type": "pybullet",
+      "mode": "gui"
+    },
+    "GRIPPER_SIMULATION": {
+      "type": "pneumatic"
+    }
+  },
+  "path_planning": {
+    "PLANNER_TYPE": {
+      "global_planner": "rrt_connect"
+    },
+    "COLLISION_DETECTION": {
+      "enabled": true
+    }
+  },
+  "task": {
+    "BASIC_GRASP_TASK": {
+      "name": "basic_grasp",
+      "description": "基本物体抓取任务",
+      "steps": [
+        {
+          "action": "move_to_ready",
+          "params": {
+            "speed": 30.0
+          }
+        },
+        {
+          "action": "detect_object",
+          "params": {
+            "object_class": "cube"
+          }
+        },
+        {
+          "action": "execute_grasp",
+          "params": {
+            "force": 10.0
+          }
+        }
+      ]
+    }
+  }
+}

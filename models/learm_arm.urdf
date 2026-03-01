@@ -1,0 +1,256 @@
+<?xml version="1.0"?>
+<robot name="learm_arm">
+  <!--
+    说明：
+    - 单位：长度(m)、质量(kg)、角度(rad)。
+    - 这是一个简化的 6 自由度机械臂模型，主要用于仿真演示。
+    - link 表示刚体连杆；joint 表示连杆之间的关节。
+    - visual 用于显示外观，collision 用于碰撞计算，inertial 用于动力学参数。
+  -->
+
+  <!-- base_link：机械臂基座 -->
+  <link name="base_link">
+    <!-- 惯性参数：质量与转动惯量（简化值） -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/>
+    </inertial>
+    <!-- 外观几何体：圆柱体基座 -->
+    <visual>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.05"/>
+      </geometry>
+      <material name="base_gray">
+        <color rgba="0.6 0.6 0.6 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体：与外观一致，便于碰撞检测 -->
+    <collision>
+      <origin xyz="0 0 0.025" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.05" length="0.05"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- link1：第一段连杆 -->
+  <link name="link1">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <mass value="1.2"/>
+      <inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.002"/>
+    </inertial>
+    <!-- 外观：细长圆柱 -->
+    <visual>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.2"/>
+      </geometry>
+      <material name="link_blue">
+        <color rgba="0.3 0.4 0.8 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.2"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint1：基座到第一段连杆，绕 Z 轴旋转 -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <!-- 关节安装位置（相对父 link） -->
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+    <!-- 关节轴：Z 轴 -->
+    <axis xyz="0 0 1"/>
+    <!-- 关节角度范围、力矩与速度上限 -->
+    <limit lower="-3.14" upper="3.14" effort="10" velocity="1.5"/>
+  </joint>
+
+  <!-- link2：第二段连杆 -->
+  <link name="link2">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.004" ixy="0" ixz="0" iyy="0.004" iyz="0" izz="0.002"/>
+    </inertial>
+    <!-- 外观 -->
+    <visual>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.025" length="0.2"/>
+      </geometry>
+      <material name="link_blue_light">
+        <color rgba="0.4 0.6 0.9 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.025" length="0.2"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint2：link1 到 link2，绕 Y 轴旋转（肩部） -->
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="8" velocity="1.5"/>
+  </joint>
+
+  <!-- link3：第三段连杆 -->
+  <link name="link3">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.075" rpy="0 0 0"/>
+      <mass value="0.8"/>
+      <inertia ixx="0.003" ixy="0" ixz="0" iyy="0.003" iyz="0" izz="0.001"/>
+    </inertial>
+    <!-- 外观 -->
+    <visual>
+      <origin xyz="0 0 0.075" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.022" length="0.15"/>
+      </geometry>
+      <material name="link_green">
+        <color rgba="0.3 0.7 0.5 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.075" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.022" length="0.15"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint3：link2 到 link3，绕 Y 轴旋转（肘部） -->
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="6" velocity="1.5"/>
+  </joint>
+
+  <!-- link4：第四段连杆 -->
+  <link name="link4">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <mass value="0.6"/>
+      <inertia ixx="0.002" ixy="0" ixz="0" iyy="0.002" iyz="0" izz="0.001"/>
+    </inertial>
+    <!-- 外观 -->
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.02" length="0.1"/>
+      </geometry>
+      <material name="link_green_light">
+        <color rgba="0.4 0.8 0.6 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.02" length="0.1"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint4：link3 到 link4，绕 X 轴旋转（腕部1） -->
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/>
+    <child link="link4"/>
+    <origin xyz="0 0 0.15" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14" upper="3.14" effort="5" velocity="1.8"/>
+  </joint>
+
+  <!-- link5：第五段连杆 -->
+  <link name="link5">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <mass value="0.4"/>
+      <inertia ixx="0.0015" ixy="0" ixz="0" iyy="0.0015" iyz="0" izz="0.0008"/>
+    </inertial>
+    <!-- 外观 -->
+    <visual>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.017" length="0.1"/>
+      </geometry>
+      <material name="link_orange">
+        <color rgba="0.9 0.6 0.3 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.05" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.017" length="0.1"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint5：link4 到 link5，绕 Y 轴旋转（腕部2） -->
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/>
+    <child link="link5"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.5" upper="2.5" effort="4" velocity="1.8"/>
+  </joint>
+
+  <!-- link6：第六段连杆（末端） -->
+  <link name="link6">
+    <!-- 惯性参数 -->
+    <inertial>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <mass value="0.3"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0005"/>
+    </inertial>
+    <!-- 外观 -->
+    <visual>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.015" length="0.08"/>
+      </geometry>
+      <material name="link_orange_light">
+        <color rgba="0.95 0.75 0.4 1"/>
+      </material>
+    </visual>
+    <!-- 碰撞几何体 -->
+    <collision>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.015" length="0.08"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- joint6：link5 到 link6，绕 X 轴旋转（腕部3/末端） -->
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/>
+    <child link="link6"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14" upper="3.14" effort="3" velocity="2.0"/>
+  </joint>
+</robot>

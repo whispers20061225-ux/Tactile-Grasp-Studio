@@ -1,0 +1,61 @@
+algorithm:
+  clustering_enabled: true
+  clustering_method: kmeans
+  data_dimensions:
+  - 3
+  - 3
+  feature_extraction_method: pca
+  feature_size: 9
+  num_clusters: 3
+  temporal_window: 10
+  use_spatial_features: true
+  use_temporal_features: true
+deep_learning: null
+demo_modes: {}
+hardware:
+  auto_connect: true
+  connection_timeout: 5.0
+  sensor:
+    baudrate: 115200
+    calibration_enabled: true
+    cols: 3
+    data_format: raw
+    model: M2020_3x3
+    num_taxels: 9
+    port: COM3
+    pressure_range:
+    - 0
+    - 100
+    resolution: 0.1
+    rows: 3
+    sampling_rate: 100
+    timeout: 1.0
+    type: default
+  servo:
+    baudrate: 115200
+    max_angle: 180
+    min_angle: 0
+    port: COM4
+    position_kd: 0.05
+    position_ki: 0.1
+    position_kp: 1.0
+    speed: 50
+    timeout: 1.0
+    torque_limit: 1.0
+    type: st3215
+sensor_type: default
+ui:
+  auto_save_data: false
+  control_panel_width: 300
+  data_refresh_rate: 30
+  language: zh_CN
+  save_interval: 60
+  sensor_grid_size:
+  - 3
+  - 3
+  show_grid: true
+  show_tactile_grid: true
+  theme: light
+  window_height: 800
+  window_width: 1200
+version: 2.0.0

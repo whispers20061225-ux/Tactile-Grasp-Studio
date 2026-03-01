@@ -1,0 +1,26 @@
+name: dayiprogramme
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - pip
+  - pybullet
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - scikit-image
+  - opencv
+  - pyqt
+  - open3d
+  - h5py
+  - pillow
+  - psutil
+  - polars
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip:
+      - -r requirements_pip.txt

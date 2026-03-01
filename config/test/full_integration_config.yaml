@@ -1,0 +1,226 @@
+algorithm:
+  clustering_enabled: true
+  clustering_method: kmeans
+  data_dimensions:
+  - 3
+  - 3
+  feature_extraction_method: pca
+  feature_size: 9
+  motion_planning:
+    collision_checking: true
+    optimization_enabled: true
+    planner_type: rrt_connect
+    use_moveit: false
+  num_clusters: 3
+  temporal_window: 10
+  use_spatial_features: true
+  use_temporal_features: true
+  vision_algorithm:
+    object_detection: true
+    pose_estimation: true
+    segmentation: false
+    tracking: true
+camera:
+  HARDWARE:
+    primary_camera:
+      camera_id: 0
+      color_format: rgb8
+      enable_depth: true
+      fps: 30
+      fov: 90
+      resolution:
+      - 1280
+      - 800
+      serial: "333422301846"
+      type: realsense
+    depth_camera:
+      depth_clipping:
+      - 0.6
+      - 6.0
+      depth_format: z16
+      depth_resolution:
+      - 1280
+      - 720
+      enabled: true
+deep_learning: null
+demo_modes: {}
+hardware:
+  auto_connect: true
+  connection_timeout: 5.0
+  emergency_timeout: 5.0
+  max_force_limit: 50.0
+  safety_enabled: true
+  sensor:
+    baudrate: 115200
+    calibration_enabled: true
+    cols: 3
+    data_format: raw
+    dynamic_range_adjustment: true
+    filter_enabled: true
+    filter_type: median
+    filter_window: 5
+    filter_window_size: 5
+    force_scale: 10.0
+    gain:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    high_pass_cutoff: 0.1
+    low_pass_cutoff: 50.0
+    max_pressure_range: 100.0
+    model: M2020_3x3
+    moving_average_window: 10
+    normalize_data: true
+    num_taxels: 9
+    offset:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    port: COM3
+    pressure_range:
+    - 0
+    - 100
+    remove_offset: true
+    resolution: 0.1
+    retry_count: 3
+    rows: 3
+    sampling_rate: 100
+    sensitivity: 1.0
+    timeout: 0.1
+    type: default
+  servo:
+    acceleration: 50
+    backlash_compensation: 0.0
+    baudrate: 115200
+    current_kd: 0.001
+    current_ki: 0.01
+    current_kp: 0.3
+    current_limit: 1.0
+    deadband: 1.0
+    deceleration: 50
+    feedforward_acceleration: 0.0
+    feedforward_velocity: 0.0
+    home_position: 90
+    max_angle: 180
+    max_force: 10.0
+    max_torque: 2.0
+    min_angle: 0
+    port: COM4
+    position_kd: 0.05
+    position_ki: 0.1
+    position_kp: 1.0
+    retry_count: 3
+    smooth_factor: 0.1
+    speed: 50
+    timeout: 1.0
+    torque: 1.0
+    torque_limit: 1.0
+    type: st3215
+    velocity_kd: 0.02
+    velocity_ki: 0.01
+    velocity_kp: 0.5
+integration:
+  arm_config_path: null
+  arm_integration_enabled: true
+  camera_config_path: null
+  communication:
+    protocol: direct
+    sync_rate: 100
+    timeout: 5.0
+  coordinate_systems:
+    camera_frame: camera_color_optical_frame
+    hand_eye_calibrated: false
+    tool_frame: gripper_tcp
+    world_frame: base_link
+  planning_config_path: null
+  planning_integration_enabled: true
+  simulation_config_path: null
+  simulation_integration_enabled: true
+  task_config_path: null
+  task_integration_enabled: true
+  vision_integration_enabled: true
+learm_arm:
+  CONNECTION:
+    type: simulation
+  PHYSICAL:
+    dof: 6
+  SAFETY:
+    workspace_limits:
+      x:
+      - -0.9
+      - 0.9
+      y:
+      - -0.9
+      - 0.9
+      z:
+      - 0
+      - 0.9
+path_planning:
+  COLLISION_DETECTION:
+    enabled: true
+  PLANNER_TYPE:
+    global_planner: rrt_connect
+sensor_type: default
+simulation:
+  ENGINE:
+    mode: gui
+    type: pybullet
+  GRIPPER_SIMULATION:
+    type: pneumatic
+task:
+  BASIC_GRASP_TASK:
+    description: 基本物体抓取任务
+    name: basic_grasp
+    steps:
+    - action: move_to_ready
+      params:
+        speed: 30.0
+    - action: detect_object
+      params:
+        object_class: cube
+    - action: execute_grasp
+      params:
+        force: 10.0
+ui:
+  arm_ui:
+    show_arm_status: true
+    show_joint_states: true
+    show_trajectory: true
+    show_workspace: false
+  auto_save_data: false
+  control_panel_width: 300
+  data_refresh_rate: 30
+  language: zh_CN
+  save_interval: 60
+  sensor_grid_size:
+  - 3
+  - 3
+  show_grid: true
+  show_tactile_grid: true
+  simulation_ui:
+    physics_debug: false
+    show_collision_boxes: true
+    show_simulation_view: false
+  theme: light
+  vision_ui:
+    camera_view_size:
+    - 640
+    - 480
+    show_camera_view: true
+    show_detection_results: true
+    show_point_cloud: false
+  window_height: 800
+  window_width: 1200
+version: 3.0.0
