@@ -1,0 +1,13 @@
+fake_tactile_publisher:
+  ros__parameters:
+    rows: 3
+    cols: 3
+    publish_rate_hz: 30.0
+    noise_sigma: 0.08
+    pattern: "sine"
+
+tactile_ui_subscriber:
+  ros__parameters:
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    report_interval_sec: 2.0

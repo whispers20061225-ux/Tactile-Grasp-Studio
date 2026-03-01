@@ -161,3 +161,12 @@ python main.py --demo tactile_mapping --params "{\"duration\": 10}"
 - 在 `tests/` 中补充可持续运行的单元测试/集成测试（尽量与硬件解耦）
 - 增加 CI（例如 GitHub Actions）进行 `lint + test`
 - 逐步补齐 `docs/`（架构图、模块接口、部署说明）
+
+## 9. ROS2 重构进展
+
+- 重构开发主线位于 `develop` 分支。
+- 第 1 阶段骨架已创建在 `ros2_ws/`，包括：
+- `tactile_interfaces`
+- `tactile_bringup`
+- `tactile_ui_bridge`
+- 详细说明见 `docs/phase1_kickoff.md` 与 `docs/ros2_refactor_plan.md`。
