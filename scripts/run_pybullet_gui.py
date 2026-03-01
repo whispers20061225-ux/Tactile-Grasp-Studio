@@ -21,7 +21,11 @@ from pathlib import Path
 
 # 确保项目根目录在 Python 路径中，避免找不到本地包
 project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
+src_root = project_root / "src"
+if str(src_root) not in sys.path:
+    sys.path.insert(0, str(src_root))
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 import pybullet as p
 from simulation.simulator import Simulator
