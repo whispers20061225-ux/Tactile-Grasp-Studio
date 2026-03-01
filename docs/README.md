@@ -18,3 +18,8 @@ Notes:
 - The root `main.py` keeps backward compatibility and adds `src/` to `PYTHONPATH` at runtime.
 - New modules should be added under `src/`.
 - Python dependencies are managed via `requirements.txt` and `environment.yml`.
+
+## Engineering Docs
+
+- `ros2_refactor_plan.md`: phased ROS2 refactor plan with rollback and GitHub sync strategy.
+- `github_code_architecture_style.md`: GitHub-side architecture style during refactor (branches, PR, release, repo layout).
