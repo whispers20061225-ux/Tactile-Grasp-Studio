@@ -1,26 +1,48 @@
-# ROS2 渐进式重构计划（含 GitHub 同步策略）
+# ROS2 渐进式重构总计划（含 SmolVLA 策略迁移）
 
-## 1. 目标与边界
+本文档是当前项目的唯一重构主计划，覆盖架构、分阶段实施、GitHub 同步策略、回滚策略和验收标准。
 
-### 1.1 目标
+## 1. 重构目标
 
-- 保留现有 PyQt 界面与主要算法能力。
-- 先把通信与控制链路 ROS2 化，再逐步迁移任务编排。
-- 架构按分层解耦：展示层、业务层、设备层、基础层。
-- 支持后续接入 MoveIt2 与多机协同。
+### 1.1 业务目标
 
-### 1.2 不变项（必须保留）
+- 保留现有 PyQt GUI 的外观和主要交互流程。
+- 把通信与控制链路从单体线程模型迁移到 ROS2 节点模型。
+- 支持后续 MoveIt2、多机协同和录包回放。
+- 将原自研 AI 组件迁移为开源 VLA 方案（优先 SmolVLA），并保留可回退能力。
 
-- `main.py` 可继续运行（legacy 模式）。
-- 现有 GUI 外观与交互不重写。
-- 每阶段都可回滚到上一稳定 tag。
+### 1.2 工程目标
 
-### 1.3 双轨运行策略
+- 每一步可回滚，不影响当前可运行版本。
+- 采用双轨运行：`legacy` 与 `ros2` 并行。
+- GitHub 作为唯一真源，所有里程碑通过 PR/Tag/Release 固化。
 
-- `--mode legacy|ros2`（默认 `legacy`）。
-- 新能力先并行上线，再灰度切流，最后替换。
+### 1.3 非目标（当前阶段不做）
 
-## 2. 目标包结构
+- 不一次性重写 GUI。
+- 不一次性替换所有控制逻辑。
+- 不在早期阶段删除 legacy 主链路。
+
+## 2. 目标架构（重构完成态）
+
+### 2.1 分层架构
+
+- 展示层：PyQt HMI（通过 `tactile_ui_bridge` 读写 ROS2）
+- 业务层：任务编排与策略（Action/Service 驱动）
+- 设备层：传感器、机械臂、夹爪驱动节点
+- 基础层：`interfaces`、`launch`、参数、日志、录包
+
+### 2.2 逻辑数据流
+
+```text
+Hardware Nodes -> /tactile/raw -> Perception -> /tactile/processed
+                                         -> Policy (SmolVLA/Legacy)
+Policy -> /policy/command -> Control -> /arm/* /gripper/*
+Control/Hardware -> /system/health -> UI Bridge -> PyQt GUI
+Task Action Server <-> UI Bridge / external clients
+```
+
+### 2.3 包结构（最终）
 
 - `tactile_interfaces`
 - `tactile_hardware`
@@ -29,222 +51,283 @@
 - `tactile_task`
 - `tactile_ui_bridge`
 - `tactile_bringup`
+- `tactile_policy`（新增：策略后端抽象，承载 SmolVLA）
 
-建议落地路径：
+建议目录：
 
-- `ros2_ws/src/<packages>`
+- `ros2_ws/src/<above_packages>`
 
-## 3. 通信设计基线
+## 3. SmolVLA 接入策略（新增）
 
-### 3.1 Topics
+### 3.1 原则
+
+- 不直接硬替换控制器，先替换“策略层”。
+- 控制与安全仍由 `tactile_control` 执行和限幅。
+- 通过配置切换后端，随时回退：
+- `policy_backend=legacy|smolvla`
+
+### 3.2 新增组件
+
+- `tactile_policy` 包
+- `policy_server` 节点（可本地推理或远程推理）
+- `policy_adapter`（输入输出对齐：视觉/触觉/状态 -> 动作建议）
+
+### 3.3 输入输出约定
+
+- 输入：
+- `/tactile/processed`
+- `/arm/state`
+- `/gripper/state`
+- 可选 `/vision/features`
+- 输出：
+- `/policy/command`（动作建议，不直接下发硬件）
+- `/policy/status`（推理延迟、置信度、后端状态）
+
+### 3.4 安全约束
+
+- 控制层对策略输出做限幅、速率限制、急停仲裁。
+- 策略超时/异常自动回退到 `legacy` 策略。
+
+## 4. 通信设计（基线）
+
+### 4.1 Topics
 
 - `/tactile/raw`
 - `/tactile/processed`
 - `/arm/state`
 - `/gripper/state`
 - `/system/health`
+- `/policy/command`（新增）
+- `/policy/status`（新增）
 
-### 3.2 Services
+### 4.2 Services
 
 - `/arm/enable`
 - `/arm/home`
 - `/gripper/set_force`
 - `/system/reset_emergency`
+- `/policy/set_backend`（新增）
 
-### 3.3 Actions
+### 4.3 Actions
 
 - `/task/execute_demo`
 - `/arm/move_joints`
 - `/gripper/grasp_sequence`
 
-### 3.4 QoS 建议
+### 4.4 QoS 规范
 
-- 传感器类：`SensorDataQoS`（高频、BestEffort、KeepLast）
-- 状态类：Reliable
+- 传感器流：BestEffort + KeepLast（高频）
+- 状态流：Reliable
 - 控制命令：Reliable
-- 监控类：可 BestEffort
+- 告警/健康：Reliable（必要时 TransientLocal）
 
-## 4. 分阶段实施（每次重构什么 + 是否保留原功能）
+## 5. 分阶段计划（每次改什么、保留什么、验收什么）
 
-### 阶段 1（1 周）
+### Phase 0：冻结基线（已完成）
 
-重构内容：
+改动：
 
-- 建立 `ros2_ws` 与 `tactile_interfaces`。
-- 打通最小链路：假数据发布 + GUI 订阅（只读）。
-- 增加 `tactile_bringup` 最小 launch。
+- 建立 `main` 稳定线和 `develop` 集成线。
+- 固化文档、PR 模板、CI 基础校验。
 
-保留情况：
+保留：
 
-- legacy 功能 100% 保留。
+- 全量 legacy 可运行。
+
+验收：
+
+- 基线 release/tag 可回滚。
+
+### Phase 1：最小链路打通（进行中）
+
+改动：
+
+- `ros2_ws`、`tactile_interfaces`、`tactile_bringup`、`tactile_ui_bridge` 骨架。
+- 假数据发布 + UI 订阅。
+- 新增 `main_ros2.py`（只读监控模式）。
+
+保留：
+
+- `main.py` legacy 100% 保留，不替换。
 
 验收：
 
 - `colcon build` 通过。
-- GUI 可实时显示 `/tactile/raw`。
-- legacy 启动链路不受影响。
+- `/tactile/raw` 可观测。
+- GUI 在 ROS2 入口可显示流数据。
+- legacy 入口不受影响。
 
-### 阶段 2（1-2 周）
+### Phase 2：硬件层节点化
 
-重构内容：
+改动：
 
-- 把 `hardware_interface`、`learm_interface` 封装为硬件节点（建议 LifecycleNode）。
-- 发布硬件状态与健康信息。
+- `hardware_interface`、`learm_interface` 节点化到 `tactile_hardware`。
+- 输出标准状态和健康信号。
 
-保留情况：
+保留：
 
-- 旧硬件路径继续可用，切换由启动参数控制。
-
-验收：
-
-- 节点可独立启停、断连恢复、状态稳定发布。
-
-### 阶段 3（1-2 周）
-
-重构内容：
-
-- `control_thread`、`gripper_controller` 拆为控制节点 + 服务接口。
-- 接入安全监控与急停复位链路。
-
-保留情况：
-
-- 旧控制线程保留，作为 fallback。
+- 旧硬件路径可切回。
 
 验收：
 
-- 关键控制路径可通过 Service/Action 完整闭环。
+- 节点可独立启停，断连恢复有效。
 
-### 阶段 4（1 周）
+### Phase 3：控制层迁移
 
-重构内容：
+改动：
 
-- GUI 接入 `tactile_ui_bridge`（先读后写）。
-- 替换数据源与命令出口，不改界面布局。
+- `control_thread`、`gripper_controller` 迁移到 `tactile_control`。
+- Service/Action 闭环。
 
-保留情况：
+保留：
 
-- UI 代码预计保留约 80%。
-- 保留 legacy 与 ros2 两种运行模式。
+- 旧控制线程保留为 fallback。
 
 验收：
 
-- 同一 UI 可切换 `legacy`/`ros2`。
-- 关键交互不退化。
+- 关键控制流程可在 ROS2 下稳定执行。
 
-### 阶段 5（1-2 周）
+### Phase 4：GUI 桥接切换
 
-重构内容：
+改动：
 
-- `demo_manager` 迁移为 Action 协调器（`tactile_task`）。
-- 逐个迁移演示流程（非一次性迁移）。
+- GUI 数据源与命令出口切到 `tactile_ui_bridge`。
+- UI 保持形态不变。
 
-保留情况：
+保留：
 
-- 未迁移 demo 保留旧入口。
+- 支持 `legacy|ros2` 运行模式切换。
+
+验收：
+
+- 常用交互无回归，显示性能达标。
+
+### Phase 5：任务编排迁移
+
+改动：
+
+- `demo_manager` 迁移到 `tactile_task` Action 协调器。
+
+保留：
+
+- 未迁移 demo 仍走旧入口。
 
 验收：
 
 - 至少两个核心 demo 在 ROS2 模式可稳定运行。
 
-### 阶段 6（1 周）
+### Phase 6：SmolVLA 接入（新增关键阶段）
 
-重构内容：
+改动：
 
-- 联调、压测、录包回放、故障演练。
-- 固化运维文档、发布流程与回滚预案。
+- 新增 `tactile_policy`。
+- 实现 `legacy_policy` 与 `smolvla_policy` 双后端。
+- 控制层接收策略建议并执行安全仲裁。
 
-保留情况：
+保留：
 
-- legacy 模式保留到 ROS2 稳定两个迭代周期后再评估下线。
+- 默认可继续使用 `legacy_policy`。
 
 验收：
 
-- 发布候选版通过联调清单并完成 release。
+- 可动态切换后端。
+- SmolVLA 推理链路稳定，异常自动回退。
+- 无硬件损伤风险（安全限幅有效）。
 
-## 5. GitHub 同步与版本策略（关键）
+### Phase 7：联调与发布固化
 
-### 5.1 分支策略
+改动：
 
-- `main`：始终可运行、可演示。
-- `develop`：阶段集成。
-- `feature/*`：单功能开发。
-- `hotfix/*`：线上修复。
+- 压测、故障演练、录包回放。
+- 文档补齐与发布流程固化。
 
-### 5.2 每天什么时候 pull
+保留：
 
-- 开始开发前：`pull --rebase origin develop`
-- 提交前：再 `pull --rebase` 一次（减少冲突）
-- PR 合并后：所有人立即 pull 同步
-- 发布前：`main` 再 pull 并做最终校验
+- legacy 至少保留两个迭代周期再评估下线。
 
-### 5.3 什么时候 push 到 GitHub
+验收：
 
-- 本地完成一个可自测的小功能即 push（不攒大提交）。
-- 每日至少一次同步 push。
-- 所有里程碑必须通过 PR 合并，不直推 `main`。
+- 达成发布门槛并发布 `v1.0.0-ros2`（或等价版本）。
 
-### 5.4 什么时候发 Release
+## 6. 功能保留与退场策略
 
-- 每个阶段结束发一个里程碑版本（tag + notes）。
-- 例如：`phase1-mvp`, `phase2-hardware`, `v1.0.0-ros2`。
+### 6.1 保留策略
 
-## 6. 功能保留与回滚机制（关键）
+- 所有阶段必须验证 legacy 可运行。
+- 新链路默认不开启硬切换，先灰度。
 
-### 6.1 功能保留承诺
+### 6.2 legacy 下线条件
 
-- 每次迭代都要证明 legacy 可运行。
-- 新功能先挂在 ros2 模式，不覆盖 legacy 主流程。
+- ROS2 + 新策略链路功能对等。
+- 连续两个迭代周期稳定通过。
+- 关键故障演练通过。
+- 已打 `legacy-final` 回滚点。
 
-### 6.2 回滚机制
+## 7. GitHub 同步策略（关键）
 
-- 任何异常可立即切回 `--mode legacy`。
-- 以阶段 tag 为回滚点，支持快速回退。
-- 禁止跨阶段的大爆炸重构。
+### 7.1 分支模型
 
-## 7. 文件管理与 GitHub 一致性（关键）
+- `main`：始终可运行
+- `develop`：阶段集成
+- `feature/*`：单功能分支
+- `hotfix/*`：线上修复
 
-### 7.1 目录规范
+### 7.2 pull 规则（固定时机）
+
+- 每天开工前：`git pull --rebase origin develop`
+- 每次提交前：再 `pull --rebase` 一次
+- PR 合并后：所有成员立即 pull
+- 发布前：`main` 再次 pull 与核验
+
+### 7.3 push 规则
+
+- 完成一个可自测小目标即 push。
+- 禁止长时间本地堆积大改动。
+- 禁止直推 `main`。
+
+### 7.4 PR 与 Release
+
+- 每阶段 2-5 个小 PR，不做“大爆炸合并”。
+- 每阶段结束打 tag 并发 release notes。
+
+## 8. 文件管理与仓库一致性
+
+### 8.1 目录规范
 
 - 业务代码：`src/`
-- ROS2 工程：`ros2_ws/`
+- ROS2：`ros2_ws/`
 - 文档：`docs/`
-- 示例与脚本：`examples/`, `scripts/`
+- 脚本/示例：`scripts/`、`examples/`
 - 测试：`tests/`
 
-### 7.2 命名规范
+### 8.2 命名和格式
 
-- 全小写 + 下划线
-- 禁止空格目录名
-- 接口、参数、launch 命名统一
+- 小写下划线命名，禁空格目录。
+- UTF-8 + LF。
+- 日志、构建产物不入库。
 
-### 7.3 变更约束
+### 8.3 文档一致性要求
 
-- 一次提交只做一类变更（代码/配置/文档分离）。
-- 变更接口必须同步文档与示例。
-- PR 必须包含验证结果与回滚说明。
+- 接口、话题、服务变更必须同步 `docs/`。
+- 策略后端变更必须同步“回退说明”。
 
-## 8. CI 与质量门禁
+## 9. 风险与缓解
 
-- PR 必过：
-- 代码风格检查
-- 基础语法检查
-- 关键模块导入/构建检查
-- 文档完整性检查（接口变更必须有文档）
+### 9.1 高风险点
 
-建议后续补充：
+- Qt 事件循环与 ROS2 执行器并发模型。
+- 策略输出不稳定导致控制风险。
+- 真机联调环境漂移（不同机器依赖不一致）。
 
-- ROS2 包 `colcon build` 检查
-- 关键节点 smoke test
+### 9.2 缓解
 
-## 9. 环境建议
+- 先只读桥接，后控制写入。
+- 策略层与控制层强隔离，控制层最终裁决。
+- Linux 统一联调环境（Ubuntu 24.04 + ROS2 Jazzy）。
 
-- 主开发/联调：Ubuntu 24.04 + ROS2 Jazzy
-- Windows：用于轻量开发、GUI 逻辑开发
-- 真机联调建议 Linux 统一环境
+## 10. 阶段完成定义（DoD）
 
-## 10. 执行节奏建议
-
-- 每周一：阶段目标与验收项更新到 GitHub Milestone
-- 每天：小步提交 + PR
-- 每周：阶段集成回归 + 里程碑 tag/release
-- 每阶段结束：输出一份“保留功能清单 + 回滚验证记录”
+- 代码合并：PR 全绿、审查通过。
+- 运行验证：按阶段验收清单执行并留记录。
+- 文档完整：计划、接口、回滚说明同步。
+- 可回滚：有明确 tag 和回退步骤。
