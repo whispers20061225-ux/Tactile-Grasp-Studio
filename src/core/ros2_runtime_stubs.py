@@ -10,7 +10,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 try:
     import rclpy
-    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from std_srvs.srv import SetBool, Trigger
@@ -20,6 +20,7 @@ try:
     ROS2_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - optional at runtime
     rclpy = None
+    ExternalShutdownException = Exception
     SingleThreadedExecutor = None
     Node = object
     QoSProfile = None
@@ -219,6 +220,9 @@ class Ros2ControlThread(QThread):
             while self._running:
                 self._executor.spin_once(timeout_sec=0.05)
                 self._drain_command_queue(max_items=4)
+        except ExternalShutdownException:
+            # Expected during Ctrl-C / external ROS shutdown.
+            pass
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("ROS2 control thread crashed")
             self.error_occurred.emit("thread_error", {"error": str(exc)})
@@ -600,7 +604,10 @@ class Ros2ControlThread(QThread):
         future = client.call_async(request)
         deadline = time.time() + self.command_timeout_sec
         while self._running and time.time() < deadline:
-            self._executor.spin_once(timeout_sec=0.05)
+            try:
+                self._executor.spin_once(timeout_sec=0.05)
+            except ExternalShutdownException:
+                return None, "ros context shutdown"
             if future.done():
                 break
         if not future.done():

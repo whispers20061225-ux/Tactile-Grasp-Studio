@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import time
 import math
+import logging
 import matplotlib
 
 # 设置Matplotlib性能参数
@@ -30,8 +31,12 @@ from matplotlib.patches import FancyArrowPatch
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
 # 设置中文字体
 chinese_fonts = [
+    'DejaVu Sans',       # Linux default
+    'Noto Sans CJK SC',  # Linux CJK if installed
     'SimHei',            # 黑体 (Windows)
     'Microsoft YaHei',   # 微软雅黑 (Windows)
     'PingFang SC',       # 苹方 (macOS)
@@ -39,7 +44,7 @@ chinese_fonts = [
     'Arial Unicode MS',  # 通用
 ]
 
-rcParams['font.sans-serif'] = chinese_fonts + ['sans-serif']
+rcParams['font.sans-serif'] = chinese_fonts
 rcParams['axes.unicode_minus'] = False
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QGroupBox, QGridLayout, QSlider
@@ -1822,5 +1827,4 @@ class ForcePlotWidget(PlotWidget):
             
         except Exception as e:
             print(f"更新力分布图错误: {e}")
-
 
