@@ -26,9 +26,13 @@ def _configure_matplotlib_runtime() -> None:
     """Reduce non-actionable matplotlib font noise in GUI runtime."""
     warnings.filterwarnings(
         "ignore",
-        message=r"Glyph \d+ .* missing from font\(s\) .*",
+        message=r".*Glyph .* missing from font\(s\).*",
         category=UserWarning,
-        module=r"matplotlib\..*",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*findfont:.*",
+        category=UserWarning,
     )
     logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
