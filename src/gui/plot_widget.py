@@ -35,13 +35,13 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 # 设置中文字体
 chinese_fonts = [
-    'DejaVu Sans',       # Linux default
     'Noto Sans CJK SC',  # Linux CJK if installed
     'SimHei',            # 黑体 (Windows)
     'Microsoft YaHei',   # 微软雅黑 (Windows)
     'PingFang SC',       # 苹方 (macOS)
     'STHeiti',           # 华文黑体 (macOS)
     'Arial Unicode MS',  # 通用
+    'DejaVu Sans',       # Linux default fallback
 ]
 
 rcParams['font.sans-serif'] = chinese_fonts
@@ -1827,4 +1827,3 @@ class ForcePlotWidget(PlotWidget):
             
         except Exception as e:
             print(f"更新力分布图错误: {e}")
-

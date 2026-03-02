@@ -11,6 +11,7 @@ import argparse
 import logging
 import signal
 import sys
+import warnings
 from pathlib import Path
 
 project_root = Path(__file__).parent
@@ -19,6 +20,35 @@ if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+
+def _configure_matplotlib_runtime() -> None:
+    """Reduce non-actionable matplotlib font noise in GUI runtime."""
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Glyph \d+ .* missing from font\(s\) .*",
+        category=UserWarning,
+        module=r"matplotlib\..*",
+    )
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+    try:
+        from matplotlib import rcParams
+
+        rcParams["font.sans-serif"] = [
+            "Noto Sans CJK SC",
+            "WenQuanYi Micro Hei",
+            "SimHei",
+            "Microsoft YaHei",
+            "PingFang SC",
+            "STHeiti",
+            "Arial Unicode MS",
+            "DejaVu Sans",
+        ]
+        rcParams["axes.unicode_minus"] = False
+    except Exception:
+        # Matplotlib may be unavailable in some stripped runtime environments.
+        pass
 
 
 class Ros2PhaseApp:
@@ -231,6 +261,7 @@ def main() -> None:
         level=getattr(logging, args.log_level),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    _configure_matplotlib_runtime()
 
     app = Ros2PhaseApp(
         config_path=args.config,
