@@ -24,22 +24,6 @@ arm_driver_node:
     state_topic: "/arm/state"
     health_topic: "/system/health"
 
-gripper_driver_node:
-  ros__parameters:
-    state_rate_hz: 20.0
-    auto_enable: true
-    use_simulation: true
-    servo_port: "SIM_GRIPPER"
-    servo_baudrate: 115200
-    servo_timeout: 1.0
-    servo_min_angle: 0
-    servo_max_angle: 180
-    servo_home_position: 90
-    servo_speed: 50
-    servo_max_force: 10.0
-    state_topic: "/gripper/state"
-    health_topic: "/system/health"
-
 tactile_ui_subscriber:
   ros__parameters:
     tactile_topic: "/tactile/raw"

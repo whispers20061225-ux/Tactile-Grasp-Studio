@@ -3,7 +3,7 @@
 This workspace now includes:
 
 - phase 1: minimal fake tactile chain for GUI read-only validation
-- phase 2: hardware-layer ROS2 nodes for tactile sensor, arm, and gripper
+- phase 2: hardware-layer ROS2 nodes for tactile sensor and arm
 
 ## Workspace layout
 
@@ -47,8 +47,7 @@ ros2 launch tactile_bringup phase2_hardware.launch.py
 Default phase 2 behavior:
 
 - tactile sensor node publishes `/tactile/raw` (simulation fallback enabled)
-- arm driver node publishes `/arm/state` (manual enable by service)
-- gripper driver node publishes `/gripper/state` and serves `/gripper/set_force`
+- arm driver node publishes `/arm/state` and controls joint ids `1..6` (manual enable by service)
 - health is reported on `/system/health`
 
 Useful service calls:
@@ -56,5 +55,4 @@ Useful service calls:
 ```bash
 ros2 service call /arm/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /arm/home std_srvs/srv/Trigger "{}"
-ros2 service call /gripper/set_force tactile_interfaces/srv/SetGripperForce "{force: 3.0, block: true, timeout_sec: 5.0}"
 ```

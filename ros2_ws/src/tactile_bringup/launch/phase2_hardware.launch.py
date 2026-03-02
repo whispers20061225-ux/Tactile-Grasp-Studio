@@ -25,14 +25,6 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[param_file],
     )
 
-    gripper_driver_node = Node(
-        package="tactile_hardware",
-        executable="gripper_driver_node",
-        name="gripper_driver_node",
-        output="screen",
-        parameters=[param_file],
-    )
-
     tactile_ui_subscriber = Node(
         package="tactile_ui_bridge",
         executable="tactile_ui_subscriber",
@@ -45,8 +37,6 @@ def generate_launch_description() -> LaunchDescription:
         [
             tactile_sensor_node,
             arm_driver_node,
-            gripper_driver_node,
             tactile_ui_subscriber,
         ]
     )
-
