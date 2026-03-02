@@ -8,7 +8,7 @@ from core.data_acquisition import DataBuffer, SensorData
 
 try:
     import rclpy
-    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from tactile_interfaces.msg import SystemHealth, TactileRaw
@@ -16,6 +16,7 @@ try:
     ROS2_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - optional dependency at runtime
     rclpy = None
+    ExternalShutdownException = Exception
     SingleThreadedExecutor = None
     Node = object
     QoSProfile = None
@@ -142,6 +143,9 @@ class Ros2DataAcquisitionThread(QThread):
                         },
                     )
 
+        except ExternalShutdownException:
+            # Expected during Ctrl-C / external ROS shutdown.
+            pass
         except Exception as exc:
             self.error_count += 1
             self.error_occurred.emit("acquisition_error", {"error": str(exc)})
