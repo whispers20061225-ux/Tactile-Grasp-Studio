@@ -26,5 +26,13 @@ Notes:
 - `phase1_kickoff.md`: concrete phase 1 implementation notes and run/verify steps.
 - `phase2_hardware_kickoff.md`: phase 2 hardware-layer node migration notes and run/verify steps.
 - `phase3_control_kickoff.md`: phase 3 control-layer migration notes (`/control/arm/*`, `MoveArmJoints` action, emergency reset).
-- `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration notes (`main_ros2.py` + `Ros2ControlThread`, control-mode switch).
+- `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration status and verification steps (updated to main branch state).
+- `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 - `ros2_refactor_plan.md` now includes SmolVLA policy migration and legacy AI fallback strategy.
+
+## Current Refactor Snapshot (2026-03-03)
+
+- `main` includes phase 4 updates.
+- GUI has ROS2 data + control bridge in place.
+- Legacy gripper/servo control commands are bridged in ROS2 runtime compatibility mode.
+- Next target: phase 5 ROS2 Action task orchestration.

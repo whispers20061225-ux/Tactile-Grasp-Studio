@@ -1,72 +1,93 @@
-# Phase 4 Kickoff (Develop Branch)
+# Phase 4 UI Bridge Status
 
-This file tracks the first implementation batch of UI-to-ROS2 control migration.
+This document tracks phase 4 (GUI bridge migration) after integration to `main`.
 
-## Implemented in this kickoff
+## Scope of phase 4
 
-- Upgraded `main_ros2.py` from phase1 monitor entrypoint to phase4 UI bridge entrypoint.
-- Added real ROS2 control thread in `src/core/ros2_runtime_stubs.py`:
-  - `Ros2ControlThread` subscribes:
-    - `/arm/state`
-    - `/system/health`
-  - and calls control-layer services:
+- Keep PyQt GUI appearance and interaction flow unchanged.
+- Switch GUI data source to ROS2 topics.
+- Switch GUI control command output to ROS2 control services.
+- Keep rollback path (`main.py` legacy and `main_ros2.py --control-mode stub`).
+
+## Current status (2026-03-03)
+
+- Branch status:
+  - Phase 4 updates are merged into `main`.
+- ROS2 GUI entry:
+  - `main_ros2.py` is the phase-4 runtime entry.
+- Data bridge:
+  - GUI subscribes to `/tactile/raw` and `/system/health`.
+- Control bridge:
+  - GUI arm control path is bridged to:
     - `/control/arm/enable`
     - `/control/arm/home`
     - `/control/arm/move_joint`
     - `/control/arm/move_joints`
     - `/system/reset_emergency`
-- Preserved fallback mode:
-  - `Ros2ControlThreadStub`
-  - runtime switch: `--control-mode ros2|stub`
-- Updated ROS2 demo manager bridge:
-  - forwards UI commands to ROS2 control thread:
-    - `connect_hardware`, `disconnect_hardware`
-    - `connect_stm32`, `disconnect_stm32`
-    - `connect_tactile`, `disconnect_tactile`
-    - `connect_arm`, `disconnect_arm`
-    - `arm_enable`, `arm_disable`, `arm_home`
-    - `move_arm_joint`, `move_arm_joints`
-    - `emergency_stop`, `reset_system`
-  - keeps non-migrated orchestration commands in compatibility mode.
+- Compatibility command bridge (newly completed):
+  - `move_gripper`, `set_servo_position`, `set_servo_speed`, `set_servo_force`
+  - `calibrate_hardware`, `calibrate_3d`
+  - `auto_grasp` (phase-4 compatibility path)
+- Stability fixes included:
+  - Ctrl+C shutdown no longer logs ROS2 thread crashes (`ExternalShutdownException` handled).
+  - Matplotlib Chinese font warnings reduced and CJK font probing added.
 
-## Current behavior boundary
+## Important behavior notes
 
-- Migrated:
-  - GUI arm command path -> `/control/arm/*`
-  - GUI arm state display <- `/arm/state`
-  - health warnings <- `/system/health`
-- Not migrated yet:
-  - full demo/task orchestration to ROS2 action graph (phase5 scope)
-  - legacy non-arm command set (kept as compatibility/no-op where applicable)
+- Single-arm architecture:
+  - No dedicated gripper node is required in current hardware model.
+  - Gripper-related UI commands are mapped to an arm joint service call in ROS2 bridge layer.
+- Task orchestration:
+  - `start_demo/pause_demo/resume_demo` are still compatibility behavior.
+  - Full ROS2 Action task orchestration is phase 5 scope.
 
-## Runtime commands
+## Runtime commands (VM)
 
 Terminal A:
 
 ```bash
-cd ros2_ws
+cd /home/zhuyiwei/programme/programme
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate dayiprogramme312
 source /opt/ros/jazzy/setup.bash
+cd ros2_ws
 colcon build --symlink-install
 source install/setup.bash
 ros2 launch tactile_bringup phase3_control.launch.py
 ```
 
-Terminal B (repository root):
+Terminal B:
 
 ```bash
+cd /home/zhuyiwei/programme/programme
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate dayiprogramme312
 source /opt/ros/jazzy/setup.bash
-source ros2_ws/install/setup.bash
-python main_ros2.py --control-mode ros2
+source /home/zhuyiwei/programme/programme/ros2_ws/install/setup.bash
+python main_ros2.py --control-mode ros2 --log-level INFO
 ```
 
-Fallback (read-only/stub):
+Terminal C (verification):
 
 ```bash
-python main_ros2.py --control-mode stub
+cd /home/zhuyiwei/programme/programme
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate dayiprogramme312
+source /opt/ros/jazzy/setup.bash
+source /home/zhuyiwei/programme/programme/ros2_ws/install/setup.bash
+ros2 node list
+ros2 topic list
+ros2 service list | grep /control/arm
 ```
 
-## Compatibility and rollback
+## Exit criteria for phase 4
 
-- `main.py` legacy workflow remains unchanged.
-- `main_ros2.py --control-mode stub` keeps previous monitor semantics.
-- Rollback target: previous phase3 commit on `develop`.
+- GUI tactile data updates correctly from ROS2 topic stream.
+- GUI arm commands are executed through `/control/arm/*`.
+- Legacy servo/gripper UI controls are no longer ignored in ROS2 mode.
+- `main.py` legacy path remains runnable.
+
+## Remaining gap to phase 5
+
+- Replace compatibility demo handling with ROS2 Action orchestration.
+- Migrate `start_demo/pause_demo/resume_demo/stop_demo` to task action server.
