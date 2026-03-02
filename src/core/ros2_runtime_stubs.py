@@ -140,7 +140,6 @@ class Ros2DemoManagerStub(QObject):
                 "latest_timestamp": getattr(latest, "timestamp", None),
             },
             "arm": {"connected": False},
-            "gripper": {"connected": False},
         }
 
     def export_data(self, file_path: str) -> bool:
