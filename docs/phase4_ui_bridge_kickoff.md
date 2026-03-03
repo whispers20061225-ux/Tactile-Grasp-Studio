@@ -24,22 +24,25 @@ This document tracks phase 4 (GUI bridge migration) after integration to `main`.
     - `/control/arm/move_joint`
     - `/control/arm/move_joints`
     - `/system/reset_emergency`
-- Compatibility command bridge (newly completed):
+- Compatibility command bridge:
   - `move_gripper`, `set_servo_position`, `set_servo_speed`, `set_servo_force`
   - `calibrate_hardware`, `calibrate_3d`
-  - `auto_grasp` (phase-4 compatibility path)
+  - `auto_grasp` (compatibility path)
 - Stability fixes included:
   - Ctrl+C shutdown no longer logs ROS2 thread crashes (`ExternalShutdownException` handled).
   - Matplotlib Chinese font warnings reduced and CJK font probing added.
 
 ## Important behavior notes
 
+- Migrated:
+  - GUI arm command path -> `/control/arm/*`
+  - GUI arm state display <- `/arm/state`
+  - health warnings <- `/system/health`
 - Single-arm architecture:
   - No dedicated gripper node is required in current hardware model.
   - Gripper-related UI commands are mapped to an arm joint service call in ROS2 bridge layer.
-- Task orchestration:
-  - `start_demo/pause_demo/resume_demo` are still compatibility behavior.
-  - Full ROS2 Action task orchestration is phase 5 scope.
+- Handoff:
+  - Full ROS2 Action task orchestration is phase 5 scope (`docs/phase5_task_kickoff.md`).
 
 ## Runtime commands (VM)
 
@@ -86,8 +89,3 @@ ros2 service list | grep /control/arm
 - GUI arm commands are executed through `/control/arm/*`.
 - Legacy servo/gripper UI controls are no longer ignored in ROS2 mode.
 - `main.py` legacy path remains runnable.
-
-## Remaining gap to phase 5
-
-- Replace compatibility demo handling with ROS2 Action orchestration.
-- Migrate `start_demo/pause_demo/resume_demo/stop_demo` to task action server.

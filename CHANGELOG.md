@@ -4,8 +4,25 @@ All notable project updates are recorded in this file.
 
 ## [Unreleased]
 
-- Planned next step:
-  - Phase 5 ROS2 Action task orchestration (`start_demo/pause_demo/resume_demo/stop_demo` migration).
+- Phase 5 kickoff and stabilization:
+  - Added `ExecuteDemo.action` in `tactile_interfaces`.
+  - Added new package `tactile_task` with `demo_task_node`.
+  - Added task endpoints:
+    - `/task/execute_demo` (Action)
+    - `/task/pause_demo`, `/task/resume_demo`, `/task/stop_demo` (Services)
+  - Updated ROS2 GUI bridge to route:
+    - `start_demo`, `pause_demo`, `resume_demo`, `stop_demo`
+    through the task endpoints.
+  - Added bringup and config:
+    - `phase5_task.launch.py`
+    - `phase5_task.yaml`
+    - `phase5_task_hardware.yaml`
+  - Added launch argument for config selection:
+    - `ros2 launch tactile_bringup phase5_task.launch.py param_file:=...`
+  - Removed hard-coded simulation flag in ROS2 UI bridge:
+    - STM32/tactile `simulation` status now derives from ROS2 health messages.
+- Next planned step:
+  - Phase 6 policy backend migration (SmolVLA integration).
 
 ## [2026-03-03] - Phase 4 merged to `main`
 

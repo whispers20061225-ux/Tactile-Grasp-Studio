@@ -26,13 +26,15 @@ Notes:
 - `phase1_kickoff.md`: concrete phase 1 implementation notes and run/verify steps.
 - `phase2_hardware_kickoff.md`: phase 2 hardware-layer node migration notes and run/verify steps.
 - `phase3_control_kickoff.md`: phase 3 control-layer migration notes (`/control/arm/*`, `MoveArmJoints` action, emergency reset).
-- `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration status and verification steps (updated to main branch state).
+- `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration status and verification steps.
+- `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration and runtime profile switching.
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
-- `ros2_refactor_plan.md` now includes SmolVLA policy migration and legacy AI fallback strategy.
 
 ## Current Refactor Snapshot (2026-03-03)
 
-- `main` includes phase 4 updates.
-- GUI has ROS2 data + control bridge in place.
-- Legacy gripper/servo control commands are bridged in ROS2 runtime compatibility mode.
-- Next target: phase 5 ROS2 Action task orchestration.
+- `main` now includes phase 5 task orchestration implementation.
+- GUI demo commands are routed to ROS2 task Action/Services in ROS2 mode.
+- Bringup supports profile switching with:
+  - `phase5_task.yaml` (simulation/default)
+  - `phase5_task_hardware.yaml` (hardware profile template)
+- Next target: phase 6 policy backend migration (SmolVLA integration).
