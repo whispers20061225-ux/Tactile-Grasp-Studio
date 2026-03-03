@@ -80,6 +80,15 @@ ros2 service list | grep /task/
 ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "{demo_name: 'vector_visualization', params_json: '{\"duration\": 8}', duration_sec: 8.0}" --feedback
 ```
 
+## Closeout status (2026-03-03)
+
+- Phase 5 acceptance status: passed.
+- Stabilization fixes merged:
+  - `arm_driver_node` array parameters now use explicit ROS2 types (avoids startup type mismatch on YAML arrays).
+  - ROS2 GUI STM32 connect path now performs real `/control/arm/enable` call.
+  - Arm-state diagnostics are more explicit when `/arm/state` is missing.
+  - Joint-limit-disable propagation to legacy arm interface is fixed while preserving calibrated offsets.
+
 ## Notes
 
 - Current orchestration is intentionally conservative:

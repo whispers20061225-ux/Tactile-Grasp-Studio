@@ -191,7 +191,7 @@ class ArmControlNode(Node):
             ts = self._latest_arm_state_ts
 
         if state is None:
-            return False, "arm state not received"
+            return False, "arm state not received (check arm_driver_node and /arm/state)"
         if time.time() - ts > self.arm_state_timeout_sec:
             return False, "arm state is stale"
         if not state.connected:
@@ -468,4 +468,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -4,29 +4,40 @@ All notable project updates are recorded in this file.
 
 ## [Unreleased]
 
-- Phase 5 kickoff and stabilization:
+- Next planned step:
+  - Phase 6 stabilization, bag replay, and policy backend migration (SmolVLA integration).
+
+## [2026-03-03] - Phase 5 stabilization complete
+
+- Task orchestration:
   - Added `ExecuteDemo.action` in `tactile_interfaces`.
   - Added new package `tactile_task` with `demo_task_node`.
   - Added task endpoints:
     - `/task/execute_demo` (Action)
     - `/task/pause_demo`, `/task/resume_demo`, `/task/stop_demo` (Services)
-  - Updated ROS2 GUI bridge to route:
-    - `start_demo`, `pause_demo`, `resume_demo`, `stop_demo`
-    through the task endpoints.
-  - Added bringup and config:
+- UI bridge migration:
+  - ROS2 GUI bridge now routes `start_demo/pause_demo/resume_demo/stop_demo` to `/task/*`.
+  - Demo feedback/result is re-emitted to existing GUI status channels.
+  - Removed hard-coded simulation flag in ROS2 UI bridge:
+    - STM32/tactile `simulation` status now derives from ROS2 health messages.
+- Hardware/control chain fixes:
+  - Fixed `arm_driver_node` startup crash on array parameters by using explicit ROS2 parameter types.
+  - Fixed ROS2 path so `joint_limit_disabled_ids` is correctly propagated to legacy arm interface.
+  - Kept calibrated J3 zero offset and focused the fix on limit-control path.
+  - `phase5_task.launch.py` now defaults to hardware profile (`phase5_task_hardware.yaml`).
+  - `tactile_sensor_node` no longer publishes simulated tactile frames when `use_simulation=false`.
+  - STM32 connect flow in ROS2 GUI bridge now performs real `/control/arm/enable` call instead of optimistic mock status.
+  - Improved diagnostics for missing arm state:
+    - `arm state not received (check arm_driver_node and /arm/state)`.
+- Bringup and config:
+  - Added/updated:
     - `phase5_task.launch.py`
     - `phase5_task.yaml`
     - `phase5_task_hardware.yaml`
   - Added launch argument for config selection:
     - `ros2 launch tactile_bringup phase5_task.launch.py param_file:=...`
-  - Removed hard-coded simulation flag in ROS2 UI bridge:
-    - STM32/tactile `simulation` status now derives from ROS2 health messages.
-  - Hardware-mode hardening:
-    - `phase5_task.launch.py` defaults to `phase5_task_hardware.yaml`.
-    - `tactile_sensor_node` no longer publishes simulated tactile frames when `use_simulation=false`.
-    - ROS2 connect commands no longer force fake connected states; they now wait for real health/state updates.
-- Next planned step:
-  - Phase 6 policy backend migration (SmolVLA integration).
+- Acceptance:
+  - VM + hardware validation passed for phase 5 control/task chain.
 
 ## [2026-03-03] - Phase 4 merged to `main`
 

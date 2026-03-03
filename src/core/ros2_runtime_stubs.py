@@ -213,6 +213,7 @@ class Ros2ControlThread(QThread):
             "error_message": "",
         }
         self._last_health: Dict[str, Any] = {}
+        self._arm_state_received_at = 0.0
 
         self._ros_owned_context = False
         self._node: Optional[_Ros2ControlNode] = None
@@ -357,6 +358,7 @@ class Ros2ControlThread(QThread):
         with self._lock:
             self._arm_snapshot = snapshot
             self._stm32_connected = bool(snapshot["connected"])
+            self._arm_state_received_at = time.time()
             if not self._stm32_connected:
                 self._arm_enabled = False
 
@@ -428,23 +430,32 @@ class Ros2ControlThread(QThread):
             return
 
         if command == "connect_hardware":
-            arm_success, arm_message = self._set_arm_enabled(True)
+            success, message = self._set_arm_enabled(True)
+            state_ok = self._wait_for_arm_state(timeout_sec=min(2.0, self.command_timeout_sec))
+            with self._lock:
+                arm_connected = bool(self._arm_snapshot.get("connected", False))
+                self._stm32_connected = bool(success and state_ok and arm_connected)
+            if not success:
+                detail = f"STM32 connect failed: {message}"
+            elif not state_ok:
+                detail = "STM32 enable sent, but no /arm/state received (check arm_driver_node)"
+            elif not self._stm32_connected:
+                detail = "STM32 enable succeeded, but arm still reports disconnected"
+            else:
+                detail = "STM32 bridge connected via ROS2 arm control"
             self._emit_stm32_status(
-                connected=bool(self._stm32_connected),
-                success=bool(arm_success),
-                message=arm_message if arm_message else "STM32 connect requested (awaiting health)",
+                connected=self._stm32_connected,
+                success=self._stm32_connected,
+                message=detail,
+            )
+            self.status_updated.emit(
+                "connected" if self._stm32_connected else "error",
+                {"success": self._stm32_connected, "message": detail},
             )
             self._emit_tactile_status(
                 connected=bool(self._tactile_connected),
                 success=True,
                 message="Tactile connect requested (awaiting sensor health)",
-            )
-            self.status_updated.emit(
-                "connected" if arm_success else "error",
-                {
-                    "success": bool(arm_success),
-                    "message": arm_message if arm_message else "ROS2 hardware connect requested",
-                },
             )
             return
 
@@ -495,10 +506,22 @@ class Ros2ControlThread(QThread):
 
         if command == "connect_stm32":
             success, message = self._set_arm_enabled(True)
+            state_ok = self._wait_for_arm_state(timeout_sec=min(2.0, self.command_timeout_sec))
+            with self._lock:
+                arm_connected = bool(self._arm_snapshot.get("connected", False))
+                self._stm32_connected = bool(success and state_ok and arm_connected)
+            if not success:
+                detail = f"STM32 connect failed: {message}"
+            elif not state_ok:
+                detail = "STM32 enable sent, but no /arm/state received (check arm_driver_node)"
+            elif not self._stm32_connected:
+                detail = "STM32 enable succeeded, but arm still reports disconnected"
+            else:
+                detail = "STM32 bridge connected via ROS2 arm control"
             self._emit_stm32_status(
-                connected=bool(self._stm32_connected),
-                success=bool(success),
-                message=message if message else "STM32 connect requested (awaiting health)",
+                connected=self._stm32_connected,
+                success=self._stm32_connected,
+                message=detail,
             )
             return
 
@@ -1088,6 +1111,22 @@ class Ros2ControlThread(QThread):
             return future.result(), ""
         except Exception as exc:  # noqa: BLE001
             return None, str(exc)
+
+    def _wait_for_arm_state(self, timeout_sec: float = 2.0) -> bool:
+        deadline = time.time() + max(0.1, float(timeout_sec))
+        while self._running and time.time() < deadline:
+            with self._lock:
+                ts = float(self._arm_state_received_at)
+            if ts > 0.0:
+                return True
+            if self._executor is not None:
+                try:
+                    self._executor.spin_once(timeout_sec=0.05)
+                except ExternalShutdownException:
+                    return False
+            else:
+                time.sleep(0.05)
+        return False
 
     @staticmethod
     def _resolve_joint_id(params: Dict[str, Any]) -> int:

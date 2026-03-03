@@ -1,4 +1,4 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
 
 This workspace now includes:
 
@@ -6,6 +6,7 @@ This workspace now includes:
 - phase 2: hardware-layer ROS2 nodes for tactile sensor and arm
 - phase 3: control-layer ROS2 node with safety gate and action/service APIs
 - phase 4: GUI command bridge to ROS2 control-layer services
+- phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
 
 ## Workspace layout
 
@@ -15,6 +16,7 @@ ros2_ws/
     tactile_interfaces/
     tactile_hardware/
     tactile_control/
+    tactile_task/
     tactile_bringup/
     tactile_ui_bridge/
 ```
@@ -111,4 +113,34 @@ Fallback mode:
 
 ```bash
 python main_ros2.py --control-mode stub
+```
+
+## Run phase 5 (task orchestration + GUI)
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase5_task.launch.py
+```
+
+Hardware profile example:
+
+```bash
+ros2 launch tactile_bringup phase5_task.launch.py \
+  param_file:=/home/zhuyiwei/programme/programme/ros2_ws/src/tactile_bringup/config/phase5_task_hardware.yaml
+```
+
+Terminal B (repository root):
+
+```bash
+python main_ros2.py --control-mode ros2 --log-level INFO
+```
+
+Terminal C (task/API quick check):
+
+```bash
+ros2 action list | grep /task/execute_demo
+ros2 service list | grep /task/
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "{demo_name: 'vector_visualization', params_json: '{\"duration\": 8}', duration_sec: 8.0}" --feedback
 ```
