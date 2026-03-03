@@ -58,6 +58,7 @@ class TactileSensorNode(Node):
         self._hardware = None
         self._connect_error = ""
         self._last_connect_try = 0.0
+        self._last_no_data_warn_ts = 0.0
 
         self._sequence_id = 0
         self._phase = 0.0
@@ -151,6 +152,12 @@ class TactileSensorNode(Node):
             if now - self._last_connect_try >= max(0.5, self.reconnect_interval_sec):
                 self._last_connect_try = now
                 self._try_connect_legacy_sensor()
+            if now - self._last_no_data_warn_ts >= 2.0:
+                self._last_no_data_warn_ts = now
+                self.get_logger().warn(
+                    "sensor hardware unavailable; skip tactile publish (simulation disabled)"
+                )
+            return
 
         msg = self._to_tactile_msg_from_sim()
         self.tactile_pub.publish(msg)

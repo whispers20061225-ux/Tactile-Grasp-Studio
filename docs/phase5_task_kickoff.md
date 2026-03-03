@@ -28,10 +28,12 @@ This file tracks the phase 5 migration scope: moving demo orchestration to ROS2 
   - Demo feedback/result is re-emitted to existing GUI status channel (`demo_starting/demo_started/demo_progress/demo_completed/demo_stopped/demo_failed`).
 - Runtime stabilization:
   - ROS2 UI bridge now infers `simulation` status dynamically from node health messages instead of hard-coded flags.
+  - Hardware mode no longer publishes simulated tactile frames when sensor hardware is unavailable.
   - Added hardware parameter profile:
     - `ros2_ws/src/tactile_bringup/config/phase5_task_hardware.yaml`
   - Added launch argument for config switching:
     - `ros2 launch tactile_bringup phase5_task.launch.py param_file:=<path-to-yaml>`
+  - `phase5_task.launch.py` now defaults to the hardware profile.
 
 ## Runtime verify commands
 
@@ -86,3 +88,5 @@ ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "
 - Legacy `main.py` remains unchanged for rollback safety.
 - SmolVLA (or other VLA backend) remains phase 6 scope.
 - In hardware mode, update serial ports in `phase5_task_hardware.yaml` to your actual `/dev/tty*` devices before launch.
+- To force simulation mode explicitly, pass:
+  - `param_file:=.../phase5_task.yaml`

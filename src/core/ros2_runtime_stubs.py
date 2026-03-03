@@ -428,14 +428,23 @@ class Ros2ControlThread(QThread):
             return
 
         if command == "connect_hardware":
-            with self._lock:
-                self._stm32_connected = True
-                self._tactile_connected = True
-            self._emit_stm32_status(connected=True, success=True, message="STM32 bridge ready (ROS2 mode)")
-            self._emit_tactile_status(connected=True, success=True, message="Tactile stream ready (ROS2 mode)")
+            arm_success, arm_message = self._set_arm_enabled(True)
+            self._emit_stm32_status(
+                connected=bool(self._stm32_connected),
+                success=bool(arm_success),
+                message=arm_message if arm_message else "STM32 connect requested (awaiting health)",
+            )
+            self._emit_tactile_status(
+                connected=bool(self._tactile_connected),
+                success=True,
+                message="Tactile connect requested (awaiting sensor health)",
+            )
             self.status_updated.emit(
-                "connected",
-                {"success": True, "message": "ROS2 hardware chain acknowledged"},
+                "connected" if arm_success else "error",
+                {
+                    "success": bool(arm_success),
+                    "message": arm_message if arm_message else "ROS2 hardware connect requested",
+                },
             )
             return
 
@@ -485,33 +494,31 @@ class Ros2ControlThread(QThread):
             return
 
         if command == "connect_stm32":
-            with self._lock:
-                self._stm32_connected = True
+            success, message = self._set_arm_enabled(True)
             self._emit_stm32_status(
-                connected=True,
-                success=True,
-                message="STM32 bridge ready (ROS2 mode)",
+                connected=bool(self._stm32_connected),
+                success=bool(success),
+                message=message if message else "STM32 connect requested (awaiting health)",
             )
             return
 
         if command == "disconnect_stm32":
+            success, message = self._set_arm_enabled(False)
             with self._lock:
                 self._stm32_connected = False
             self._emit_stm32_status(
                 connected=False,
-                success=True,
-                message="STM32 bridge disconnected (ROS2 mode)",
+                success=bool(success),
+                message=message if message else "STM32 disconnected (ROS2 mode)",
                 is_disconnect=True,
             )
             return
 
         if command == "connect_tactile":
-            with self._lock:
-                self._tactile_connected = True
             self._emit_tactile_status(
-                connected=True,
+                connected=bool(self._tactile_connected),
                 success=True,
-                message="Tactile stream ready (ROS2 mode)",
+                message="Tactile connect requested (awaiting sensor health)",
             )
             return
 
