@@ -5,7 +5,14 @@ All notable project updates are recorded in this file.
 ## [Unreleased]
 
 - Next planned step:
-  - Phase 6 stabilization, bag replay, and policy backend migration (SmolVLA integration).
+  - Phase 6.2 Gazebo + MoveIt2 + SmolVLA shadow-policy integration.
+- Phase 6.1 kickoff:
+  - Added package `tactile_vision` with `realsense_monitor_node`.
+  - Added `phase6_vision.launch.py` and `phase6_vision.yaml`.
+  - Added D455 stream health reporting to `/system/health`.
+  - Clarified runtime boundary:
+    - RealSense image stream uses USB ROS2 topics.
+    - STM32 remains serial chain.
 
 ## [2026-03-03] - Phase 5 stabilization complete
 
