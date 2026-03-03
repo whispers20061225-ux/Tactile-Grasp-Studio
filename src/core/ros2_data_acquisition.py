@@ -443,7 +443,15 @@ class Ros2DataAcquisitionThread(QThread):
         if not self.vision_enabled:
             return
         try:
-            k = list(getattr(msg, "k", []) or [])
+            k_raw = getattr(msg, "k", None)
+            if k_raw is None:
+                k = []
+            else:
+                # `msg.k` may be list/array/ndarray; avoid truth-value checks on ndarray.
+                try:
+                    k = [float(v) for v in list(k_raw)]
+                except Exception:
+                    k = []
             if len(k) >= 9:
                 intrinsics = {
                     "fx": float(k[0]),
