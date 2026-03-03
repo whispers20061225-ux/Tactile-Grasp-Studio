@@ -94,9 +94,17 @@ class LearmInterface:
             self.joint_zero_offsets_deg = [0.0] * self.num_joints
 
         # 对指定关节禁用角度软限制，允许负角度/超范围映射
-        disabled_ids = self.arm_config.get("joint_limit_disabled_ids", [])
+        disabled_ids = self.arm_config.get("joint_limit_disabled_ids", None)
+        if not disabled_ids:
+            # 若连接配置未显式给出，则回退到默认 LeArm 配置
+            try:
+                from config.learm_arm_config import LearmArmConfig
+
+                disabled_ids = LearmArmConfig.CONNECTION.get("joint_limit_disabled_ids")
+            except Exception:
+                disabled_ids = None
         try:
-            self._limit_disabled_joints = {int(v) for v in disabled_ids}
+            self._limit_disabled_joints = {int(v) for v in (disabled_ids or [])}
         except Exception:
             self._limit_disabled_joints = set()
 

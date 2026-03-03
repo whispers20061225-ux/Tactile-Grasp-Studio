@@ -31,6 +31,8 @@ class ArmDriverNode(Node):
         self.declare_parameter("enforce_angle_limits", True)
         self.declare_parameter("min_angle_deg", -180.0)
         self.declare_parameter("max_angle_deg", 270.0)
+        self.declare_parameter("joint_zero_offsets_deg", [])
+        self.declare_parameter("joint_limit_disabled_ids", [])
         self.declare_parameter("state_topic", "/arm/state")
         self.declare_parameter("health_topic", "/system/health")
 
@@ -48,6 +50,8 @@ class ArmDriverNode(Node):
         self.enforce_angle_limits = bool(self.get_parameter("enforce_angle_limits").value)
         self.min_angle_deg = float(self.get_parameter("min_angle_deg").value)
         self.max_angle_deg = float(self.get_parameter("max_angle_deg").value)
+        self.joint_zero_offsets_deg = self._parse_float_list_param("joint_zero_offsets_deg")
+        self.joint_limit_disabled_ids = self._parse_int_list_param("joint_limit_disabled_ids")
         self.state_topic = str(self.get_parameter("state_topic").value)
         self.health_topic = str(self.get_parameter("health_topic").value)
 
@@ -58,6 +62,13 @@ class ArmDriverNode(Node):
                 "min_angle_deg > max_angle_deg, swapping values for safety"
             )
             self.min_angle_deg, self.max_angle_deg = self.max_angle_deg, self.min_angle_deg
+        if self.joint_zero_offsets_deg:
+            if len(self.joint_zero_offsets_deg) < self.arm_num_joints:
+                self.joint_zero_offsets_deg.extend(
+                    [0.0] * (self.arm_num_joints - len(self.joint_zero_offsets_deg))
+                )
+            elif len(self.joint_zero_offsets_deg) > self.arm_num_joints:
+                self.joint_zero_offsets_deg = self.joint_zero_offsets_deg[: self.arm_num_joints]
 
         state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -100,6 +111,42 @@ class ArmDriverNode(Node):
             f"state_topic={self.state_topic}, auto_enable={self.auto_enable}, "
             f"num_joints={self.arm_num_joints}"
         )
+        if self.joint_zero_offsets_deg:
+            self.get_logger().info(
+                f"arm joint zero offsets enabled: {self.joint_zero_offsets_deg}"
+            )
+        if self.joint_limit_disabled_ids:
+            self.get_logger().info(
+                f"arm joint limit disabled ids: {self.joint_limit_disabled_ids}"
+            )
+
+    def _parse_float_list_param(self, name: str) -> List[float]:
+        raw = self.get_parameter(name).value
+        if raw is None:
+            return []
+        if not isinstance(raw, (list, tuple)):
+            return []
+        values: List[float] = []
+        for item in raw:
+            try:
+                values.append(float(item))
+            except (TypeError, ValueError):
+                continue
+        return values
+
+    def _parse_int_list_param(self, name: str) -> List[int]:
+        raw = self.get_parameter(name).value
+        if raw is None:
+            return []
+        if not isinstance(raw, (list, tuple)):
+            return []
+        values: List[int] = []
+        for item in raw:
+            try:
+                values.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return values
 
     @property
     def connected(self) -> bool:
@@ -119,13 +166,20 @@ class ArmDriverNode(Node):
             from config.demo_config import DemoConfig
 
             cfg = DemoConfig()
+            connection_cfg = {
+                "serial_port": self.arm_serial_port,
+                "baud_rate": self.arm_baudrate,
+                "timeout": self.arm_timeout,
+                "startup_delay": self.arm_startup_delay,
+            }
+            if self.joint_zero_offsets_deg:
+                connection_cfg["joint_zero_offsets_deg"] = list(self.joint_zero_offsets_deg)
+            if self.joint_limit_disabled_ids:
+                connection_cfg["joint_limit_disabled_ids"] = list(
+                    self.joint_limit_disabled_ids
+                )
             cfg.learm_arm = {
-                "CONNECTION": {
-                    "serial_port": self.arm_serial_port,
-                    "baud_rate": self.arm_baudrate,
-                    "timeout": self.arm_timeout,
-                    "startup_delay": self.arm_startup_delay,
-                }
+                "CONNECTION": connection_cfg
             }
             arm = LearmInterface(cfg)
             if not arm.connect():
