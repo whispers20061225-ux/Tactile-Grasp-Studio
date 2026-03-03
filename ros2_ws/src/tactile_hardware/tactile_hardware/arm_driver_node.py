@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import SetBool, Trigger
 
@@ -31,8 +32,12 @@ class ArmDriverNode(Node):
         self.declare_parameter("enforce_angle_limits", True)
         self.declare_parameter("min_angle_deg", -180.0)
         self.declare_parameter("max_angle_deg", 270.0)
-        self.declare_parameter("joint_zero_offsets_deg", [])
-        self.declare_parameter("joint_limit_disabled_ids", [])
+        # NOTE:
+        # Empty list literal [] is inferred as BYTE_ARRAY by rclpy.
+        # Declare array params with explicit types so YAML overrides like
+        # DOUBLE_ARRAY / INTEGER_ARRAY don't fail at startup.
+        self.declare_parameter("joint_zero_offsets_deg", Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter("joint_limit_disabled_ids", Parameter.Type.INTEGER_ARRAY)
         self.declare_parameter("state_topic", "/arm/state")
         self.declare_parameter("health_topic", "/system/health")
 
