@@ -218,6 +218,12 @@ Terminal A:
 ros2 launch tactile_bringup phase6_sim_gazebo.launch.py
 ```
 
+Optional GUI mode:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+```
+
 Terminal B:
 
 ```bash

@@ -1,5 +1,13 @@
+import os
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+)
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
@@ -35,19 +43,45 @@ def generate_launch_description() -> LaunchDescription:
         default_value="phase6_arm",
         description="Spawned entity name",
     )
+    start_gui_arg = DeclareLaunchArgument(
+        "start_gui",
+        default_value="false",
+        description="Set true to launch Gazebo Sim GUI",
+    )
 
     world = LaunchConfiguration("world")
     xacro_file = LaunchConfiguration("xacro_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     entity_name = LaunchConfiguration("entity_name")
+    start_gui = LaunchConfiguration("start_gui")
 
-    gazebo_launch = IncludeLaunchDescription(
+    current_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
+    cleaned_ld_library_path = ":".join(
+        p for p in current_ld_library_path.split(":") if p and "/snap/" not in p
+    )
+    sanitize_ld_library_path = SetEnvironmentVariable(
+        name="LD_LIBRARY_PATH",
+        value=cleaned_ld_library_path,
+    )
+
+    gazebo_headless_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [FindPackageShare("ros_gz_sim"), "launch", "gz_sim.launch.py"]
+            )
+        ),
+        launch_arguments={"gz_args": ["-r -s ", world]}.items(),
+        condition=UnlessCondition(start_gui),
+    )
+
+    gazebo_gui_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [FindPackageShare("ros_gz_sim"), "launch", "gz_sim.launch.py"]
             )
         ),
         launch_arguments={"gz_args": ["-r ", world]}.items(),
+        condition=IfCondition(start_gui),
     )
 
     robot_description = Command([FindExecutable(name="xacro"), " ", xacro_file])
@@ -132,7 +166,10 @@ def generate_launch_description() -> LaunchDescription:
             xacro_file_arg,
             use_sim_time_arg,
             entity_name_arg,
-            gazebo_launch,
+            start_gui_arg,
+            sanitize_ld_library_path,
+            gazebo_headless_launch,
+            gazebo_gui_launch,
             robot_state_publisher,
             spawn_entity,
             delay_joint_state,

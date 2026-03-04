@@ -21,9 +21,15 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Use simulation clock",
     )
+    start_gui_arg = DeclareLaunchArgument(
+        "start_gui",
+        default_value="false",
+        description="Set true to launch Gazebo Sim GUI",
+    )
 
     param_file = LaunchConfiguration("param_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    start_gui = LaunchConfiguration("start_gui")
 
     gazebo_arm_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -33,6 +39,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "use_sim_time": use_sim_time,
+            "start_gui": start_gui,
         }.items(),
     )
 
@@ -80,6 +87,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             param_file_arg,
             use_sim_time_arg,
+            start_gui_arg,
             gazebo_arm_launch,
             tactile_sim_node,
             arm_sim_driver_node,
