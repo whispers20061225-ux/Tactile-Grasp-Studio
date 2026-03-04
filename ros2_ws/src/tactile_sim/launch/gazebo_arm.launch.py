@@ -18,7 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     world_arg = DeclareLaunchArgument(
         "world",
         default_value=default_world,
-        description="Gazebo world file",
+        description="Gazebo Sim world file",
     )
     xacro_file_arg = DeclareLaunchArgument(
         "xacro_file",
@@ -44,10 +44,10 @@ def generate_launch_description() -> LaunchDescription:
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("gazebo_ros"), "launch", "gazebo.launch.py"]
+                [FindPackageShare("ros_gz_sim"), "launch", "gz_sim.launch.py"]
             )
         ),
-        launch_arguments={"world": world}.items(),
+        launch_arguments={"gz_args": ["-r ", world]}.items(),
     )
 
     robot_description = Command([FindExecutable(name="xacro"), " ", xacro_file])
@@ -66,12 +66,12 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     spawn_entity = Node(
-        package="gazebo_ros",
-        executable="spawn_entity.py",
+        package="ros_gz_sim",
+        executable="create",
         name="spawn_phase6_arm",
         output="screen",
         arguments=[
-            "-entity",
+            "-name",
             entity_name,
             "-topic",
             "robot_description",
@@ -89,7 +89,13 @@ def generate_launch_description() -> LaunchDescription:
         executable="spawner",
         name="spawner_joint_state_broadcaster",
         output="screen",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        arguments=[
+            "joint_state_broadcaster",
+            "--controller-manager",
+            "/controller_manager",
+            "--controller-manager-timeout",
+            "120",
+        ],
     )
 
     spawner_joint_trajectory = Node(
@@ -97,7 +103,13 @@ def generate_launch_description() -> LaunchDescription:
         executable="spawner",
         name="spawner_joint_trajectory_controller",
         output="screen",
-        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager"],
+        arguments=[
+            "joint_trajectory_controller",
+            "--controller-manager",
+            "/controller_manager",
+            "--controller-manager-timeout",
+            "120",
+        ],
     )
 
     delay_joint_state = RegisterEventHandler(

@@ -199,7 +199,18 @@ ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 800, wait: true}"
 ```
 
-## Run phase 6.2 (Gazebo + ros2_control kickoff)
+## Run phase 6.2 (Gazebo Sim + ros2_control kickoff)
+
+Install runtime dependencies once (Ubuntu 24.04 + ROS2 Jazzy):
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-jazzy-ros-gz-sim \
+  ros-jazzy-ros-gz \
+  ros-jazzy-gz-ros2-control \
+  ros-jazzy-xacro
+```
 
 Terminal A:
 

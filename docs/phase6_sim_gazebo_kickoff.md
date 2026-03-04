@@ -1,10 +1,10 @@
-# Phase 6.2.1 Kickoff (Gazebo + ros2_control)
+# Phase 6.2.1 Kickoff (Gazebo Sim + ros2_control)
 
-This file tracks the first Gazebo integration step for phase 6.2.
+This file tracks the first Gazebo Sim integration step for phase 6.2.
 
 ## Implemented in this kickoff
 
-- Extended `tactile_sim` package with Gazebo assets:
+- Extended `tactile_sim` package with Gazebo Sim assets:
   - `urdf/phase6_arm.urdf.xacro`
   - `worlds/phase6_tabletop.world`
   - `config/ros2_controllers.yaml`
@@ -23,6 +23,17 @@ This file tracks the first Gazebo integration step for phase 6.2.
 - Preserve phase6 baseline launch (`phase6_sim_base.launch.py`) as fallback.
 
 ## Runtime verify commands
+
+Install dependencies once (Ubuntu 24.04 + ROS2 Jazzy):
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-jazzy-ros-gz-sim \
+  ros-jazzy-ros-gz \
+  ros-jazzy-gz-ros2-control \
+  ros-jazzy-xacro
+```
 
 Terminal A:
 
