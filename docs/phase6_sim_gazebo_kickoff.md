@@ -32,6 +32,10 @@ sudo apt install -y \
   ros-jazzy-ros-gz-sim \
   ros-jazzy-ros-gz \
   ros-jazzy-gz-ros2-control \
+  ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-joint-trajectory-controller \
   ros-jazzy-xacro
 ```
 
