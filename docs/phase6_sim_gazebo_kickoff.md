@@ -31,6 +31,7 @@ sudo apt update
 sudo apt install -y \
   ros-jazzy-ros-gz-sim \
   ros-jazzy-ros-gz \
+  ros-jazzy-ros-gz-bridge \
   ros-jazzy-gz-ros2-control \
   ros-jazzy-ros2-control \
   ros-jazzy-ros2-controllers \
@@ -52,6 +53,12 @@ Optional GUI mode:
 
 ```bash
 ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+```
+
+Disable clock bridge (debug only):
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py bridge_clock:=false
 ```
 
 Terminal B:

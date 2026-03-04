@@ -48,12 +48,24 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Set true to launch Gazebo Sim GUI",
     )
+    world_name_arg = DeclareLaunchArgument(
+        "world_name",
+        default_value="phase6_tabletop_world",
+        description="Gazebo world name used for /clock bridge",
+    )
+    bridge_clock_arg = DeclareLaunchArgument(
+        "bridge_clock",
+        default_value="true",
+        description="Bridge Gazebo clock to ROS /clock",
+    )
 
     world = LaunchConfiguration("world")
     xacro_file = LaunchConfiguration("xacro_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     entity_name = LaunchConfiguration("entity_name")
     start_gui = LaunchConfiguration("start_gui")
+    world_name = LaunchConfiguration("world_name")
+    bridge_clock = LaunchConfiguration("bridge_clock")
 
     current_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
     cleaned_ld_library_path = ":".join(
@@ -118,6 +130,20 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    clock_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="clock_bridge",
+        output="screen",
+        arguments=[
+            ["/world/", world_name, "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
+            "--ros-args",
+            "-r",
+            ["/world/", world_name, "/clock:=/clock"],
+        ],
+        condition=IfCondition(bridge_clock),
+    )
+
     spawner_joint_state = Node(
         package="controller_manager",
         executable="spawner",
@@ -167,10 +193,13 @@ def generate_launch_description() -> LaunchDescription:
             use_sim_time_arg,
             entity_name_arg,
             start_gui_arg,
+            world_name_arg,
+            bridge_clock_arg,
             sanitize_ld_library_path,
             gazebo_headless_launch,
             gazebo_gui_launch,
             robot_state_publisher,
+            clock_bridge,
             spawn_entity,
             delay_joint_state,
             delay_joint_trajectory,

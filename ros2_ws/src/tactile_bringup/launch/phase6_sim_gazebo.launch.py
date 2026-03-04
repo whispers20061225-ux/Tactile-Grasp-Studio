@@ -26,10 +26,22 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Set true to launch Gazebo Sim GUI",
     )
+    world_name_arg = DeclareLaunchArgument(
+        "world_name",
+        default_value="phase6_tabletop_world",
+        description="Gazebo world name used for /clock bridge",
+    )
+    bridge_clock_arg = DeclareLaunchArgument(
+        "bridge_clock",
+        default_value="true",
+        description="Bridge Gazebo clock to ROS /clock",
+    )
 
     param_file = LaunchConfiguration("param_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_gui = LaunchConfiguration("start_gui")
+    world_name = LaunchConfiguration("world_name")
+    bridge_clock = LaunchConfiguration("bridge_clock")
 
     gazebo_arm_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -40,6 +52,8 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "use_sim_time": use_sim_time,
             "start_gui": start_gui,
+            "world_name": world_name,
+            "bridge_clock": bridge_clock,
         }.items(),
     )
 
@@ -88,6 +102,8 @@ def generate_launch_description() -> LaunchDescription:
             param_file_arg,
             use_sim_time_arg,
             start_gui_arg,
+            world_name_arg,
+            bridge_clock_arg,
             gazebo_arm_launch,
             tactile_sim_node,
             arm_sim_driver_node,
