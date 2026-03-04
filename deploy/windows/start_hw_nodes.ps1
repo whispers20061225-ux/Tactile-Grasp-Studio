@@ -15,6 +15,11 @@ $shellExe = "pwsh"
 if (-not (Get-Command $shellExe -ErrorAction SilentlyContinue)) {
     $shellExe = "powershell"
 }
+$defaultWorkspaceSetup = Join-Path $projectRoot "ros2_ws\\install\\local_setup.bat"
+
+if (-not $WorkspaceSetup -and (Test-Path $defaultWorkspaceSetup)) {
+    $WorkspaceSetup = $defaultWorkspaceSetup
+}
 
 if (-not $ArmParamFile) {
     $defaultArmParam = Join-Path $projectRoot "ros2_ws\\src\\tactile_bringup\\config\\split_windows_hardware.yaml"
@@ -24,6 +29,12 @@ if (-not $ArmParamFile) {
 }
 
 . (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
+
+function Test-RosPackage {
+    param([string]$PackageName)
+    & ros2 pkg prefix $PackageName 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
 
 $realsenseCmd = @(
     "ros2 run realsense2_camera realsense2_camera_node --ros-args",
@@ -42,6 +53,22 @@ if ($ArmParamFile) {
     $armCmd = "ros2 run tactile_hardware arm_driver_node  # add --ros-args --params-file <path>"
 }
 
+$hasRealsensePkg = Test-RosPackage -PackageName "realsense2_camera"
+$hasArmPkg = Test-RosPackage -PackageName "tactile_hardware"
+
+if ($StartRealsense -and -not $hasRealsensePkg) {
+    Write-Warning "Package 'realsense2_camera' not found. Skipping RealSense node. Install package or launch camera on VM side."
+    $StartRealsense = $false
+}
+
+if ($StartArm -and -not $hasArmPkg) {
+    Write-Warning "Package 'tactile_hardware' not found. Skipping arm node. Build ros2_ws on Windows first."
+    if (-not $WorkspaceSetup) {
+        Write-Warning "Hint: no WorkspaceSetup loaded. Build and source ros2_ws\\install\\local_setup.bat."
+    }
+    $StartArm = $false
+}
+
 Write-Host ""
 Write-Host "Windows hardware node commands:"
 if ($StartRealsense) {
@@ -55,6 +82,11 @@ Write-Host ""
 if (-not $Execute) {
     Write-Host "Dry-run mode. Re-run with -Execute to spawn new PowerShell windows."
     exit 0
+}
+
+if (-not $StartRealsense -and -not $StartArm) {
+    Write-Error "No launchable hardware nodes found in current Windows ROS2 environment."
+    exit 1
 }
 
 if ($StartRealsense) {

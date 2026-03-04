@@ -88,6 +88,15 @@ if (-not $PixiOpenSslBin -and (Test-Path $RosSetup)) {
     $rosRoot = Split-Path -Parent $RosSetup
     $candidateWorkspace = Split-Path -Parent (Split-Path -Parent $rosRoot)
     $candidatePixiDll = Join-Path $candidateWorkspace ".pixi\\envs\\default\\Library\\bin"
+    $candidatePixiScripts = Join-Path $candidateWorkspace ".pixi\\envs\\default\\Scripts"
+    $candidatePixiRoot = Join-Path $candidateWorkspace ".pixi\\envs\\default"
+
+    if (Test-Path $candidatePixiScripts) {
+        Prepend-Path -PathValue $candidatePixiScripts
+    }
+    if (Test-Path $candidatePixiRoot) {
+        Prepend-Path -PathValue $candidatePixiRoot
+    }
     if (Test-Path $candidatePixiDll) {
         $PixiOpenSslBin = $candidatePixiDll
     }
@@ -118,4 +127,3 @@ if ($CleanConda) {
 if ($PixiOpenSslBin) {
     Write-Host "PIXi_OPENSSL_BIN=$PixiOpenSslBin"
 }
-

@@ -37,6 +37,20 @@ Updated:
 2. Linux VM: start app nodes
 3. Linux VM: start GUI (`main_ros2.py`)
 
+## Windows Prerequisites
+
+Before launching Windows hardware nodes, make sure project ROS2 packages are built on Windows:
+
+```powershell
+cd C:\Users\whisp\Desktop\大一年度项目\programme
+. .\deploy\windows\env_ros2_windows.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat
+
+cd .\ros2_ws
+colcon build --merge-install --symlink-install --packages-select tactile_interfaces tactile_hardware tactile_bringup
+```
+
+After build, `ros2_ws\install\local_setup.bat` will be auto-detected by `start_hw_nodes.ps1`.
+
 ## Windows Host Commands
 
 ```powershell
@@ -50,6 +64,16 @@ cd C:\Users\whisp\Desktop\大一年度项目\programme
 # Execute: spawn hardware node windows
 . .\deploy\windows\start_hw_nodes.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -Execute
 ```
+
+Fallback options:
+
+- If `realsense2_camera` package is missing on Windows, run without camera:
+
+```powershell
+. .\deploy\windows\start_hw_nodes.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -StartRealsense:$false -Execute
+```
+
+- If `tactile_hardware` package is missing, build Windows workspace first (see prerequisites section).
 
 ## Linux VM Commands
 
@@ -99,4 +123,3 @@ After Phase B acceptance:
 - lock down split deployment scripts
 - start cross-machine task regression
 - then enter 6b (Gazebo + MoveIt2 + SmolVLA shadow-policy)
-
