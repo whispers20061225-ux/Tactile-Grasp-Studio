@@ -30,6 +30,7 @@ Notes:
 - `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration (`/task/execute_demo`, pause/resume/stop services, UI bridge routing).
 - `phase6_vision_kickoff.md`: phase 6.1 vision integration (`realsense_monitor_node`, `phase6_vision.launch.py`).
 - `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
+- `windows_ros2_terminal_setup.md`: Windows terminal initialization for ROS2 (Conda-safe startup, Pixi DLL path, `use-ros2` helper).
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 
 ## Current Refactor Snapshot (2026-03-04)
