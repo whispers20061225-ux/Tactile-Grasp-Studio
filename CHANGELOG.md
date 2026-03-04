@@ -18,6 +18,12 @@ All notable project updates are recorded in this file.
     - `deploy/vm/check_connectivity.sh`
   - Added runbook:
     - `docs/windows_vm_split_phaseA.md`
+  - Windows ROS2 terminal hardening:
+    - Enhanced `deploy/windows/env_ros2_windows.ps1`:
+      - clean conda-injected env vars / PATH entries
+      - auto prepend pixi OpenSSL DLL path for CycloneDDS chain
+    - Added operator doc:
+      - `docs/windows_ros2_terminal_setup.md`
   - Goal: keep NAT for internet, use Host-only for deterministic ROS2 communication.
 - Phase 6.1 kickoff:
   - Added package `tactile_vision` with `realsense_monitor_node`.
