@@ -11,6 +11,10 @@ param(
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
+$shellExe = "pwsh"
+if (-not (Get-Command $shellExe -ErrorAction SilentlyContinue)) {
+    $shellExe = "powershell"
+}
 
 if (-not $ArmParamFile) {
     $defaultArmParam = Join-Path $projectRoot "ros2_ws\\src\\tactile_bringup\\config\\split_windows_hardware.yaml"
@@ -59,7 +63,7 @@ if ($StartRealsense) {
         $realsenseLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
     $realsenseLaunch += "; $realsenseCmd }"
-    Start-Process pwsh -ArgumentList "-NoExit", "-Command", $realsenseLaunch
+    Start-Process $shellExe -ArgumentList "-NoExit", "-Command", $realsenseLaunch
 }
 
 if ($StartArm) {
@@ -68,5 +72,5 @@ if ($StartArm) {
         $armLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
     $armLaunch += "; $armCmd }"
-    Start-Process pwsh -ArgumentList "-NoExit", "-Command", $armLaunch
+    Start-Process $shellExe -ArgumentList "-NoExit", "-Command", $armLaunch
 }
