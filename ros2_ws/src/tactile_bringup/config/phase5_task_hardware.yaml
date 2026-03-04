@@ -16,7 +16,7 @@ arm_driver_node:
     state_rate_hz: 20.0
     auto_enable: false
     arm_num_joints: 6
-    arm_serial_port: "/dev/ttyACM0"
+    arm_serial_port: "/dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_6D7F24505157-if00"
     arm_baudrate: 115200
     arm_timeout: 1.0
     arm_startup_delay: 1.0

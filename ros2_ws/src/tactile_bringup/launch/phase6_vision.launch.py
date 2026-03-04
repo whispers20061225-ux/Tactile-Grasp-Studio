@@ -23,7 +23,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     realsense_serial_arg = DeclareLaunchArgument(
         "realsense_serial_no",
-        default_value="",
+        default_value="333422301846",
         description="Optional RealSense serial number filter",
     )
 
@@ -69,4 +69,3 @@ def generate_launch_description() -> LaunchDescription:
             realsense_monitor_node,
         ]
     )
-
