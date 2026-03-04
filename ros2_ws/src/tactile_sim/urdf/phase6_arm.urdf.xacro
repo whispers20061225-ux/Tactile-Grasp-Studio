@@ -1,8 +1,6 @@
 <?xml version="1.0"?>
 <robot name="phase6_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:property name="pi" value="3.1415926535897931"/>
-
   <link name="base_link">
     <inertial>
       <origin xyz="0 0 0.025" rpy="0 0 0"/>
