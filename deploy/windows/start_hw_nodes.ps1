@@ -10,6 +10,14 @@ param(
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
+
+if (-not $ArmParamFile) {
+    $defaultArmParam = Join-Path $projectRoot "ros2_ws\\src\\tactile_bringup\\config\\split_windows_hardware.yaml"
+    if (Test-Path $defaultArmParam) {
+        $ArmParamFile = $defaultArmParam
+    }
+}
 
 . (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
 

@@ -20,6 +20,7 @@ setup(
                 "launch/phase6_vision.launch.py",
                 "launch/phase6_sim_base.launch.py",
                 "launch/phase6_sim_gazebo.launch.py",
+                "launch/split_vm_app.launch.py",
             ],
         ),
         (
@@ -33,6 +34,8 @@ setup(
                 "config/phase6_vision.yaml",
                 "config/phase6_sim_base.yaml",
                 "config/phase6_sim_gazebo.yaml",
+                "config/split_vm_app.yaml",
+                "config/split_windows_hardware.yaml",
             ],
         ),
     ],

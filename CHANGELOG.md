@@ -18,7 +18,23 @@ All notable project updates are recorded in this file.
     - `deploy/vm/check_connectivity.sh`
   - Added runbook:
     - `docs/windows_vm_split_phaseA.md`
+  - Added Windows runtime hardening in `deploy/windows/env_ros2_windows.ps1`:
+    - clean conda-injected env vars / PATH entries
+    - auto prepend pixi OpenSSL DLL path for CycloneDDS dependency chain
+    - use runtime-local `CYCLONEDDS_URI` file path to avoid Windows URI parsing issues
   - Goal: keep NAT for internet, use Host-only for deterministic ROS2 communication.
+- Windows + VM split execution kickoff (Phase B):
+  - Added VM app-side launch:
+    - `ros2_ws/src/tactile_bringup/launch/split_vm_app.launch.py`
+    - `ros2_ws/src/tactile_bringup/config/split_vm_app.yaml`
+  - Added Windows hardware-side arm config:
+    - `ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml`
+  - Added VM app start helper:
+    - `deploy/vm/start_split_vm_app.sh`
+  - Updated Windows hardware start helper:
+    - `deploy/windows/start_hw_nodes.ps1` now defaults to `split_windows_hardware.yaml`
+  - Added runbook:
+    - `docs/windows_vm_split_phaseB.md`
 - Phase 6.1 kickoff:
   - Added package `tactile_vision` with `realsense_monitor_node`.
   - Added `phase6_vision.launch.py` and `phase6_vision.yaml`.

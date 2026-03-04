@@ -30,13 +30,15 @@ Notes:
 - `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration (`/task/execute_demo`, pause/resume/stop services, UI bridge routing).
 - `phase6_vision_kickoff.md`: phase 6.1 vision integration (`realsense_monitor_node`, `phase6_vision.launch.py`).
 - `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
+- `windows_vm_split_phaseB.md`: Phase B split deployment (Windows hardware nodes + VM app/control nodes).
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 - `ros2_refactor_plan.md` includes SmolVLA policy migration and legacy AI fallback strategy.
 
 ## Current Refactor Snapshot (2026-03-04)
 
 - `develop` now includes phase 6.1 vision ROS2 kickoff scaffolding.
-- `develop` now includes phase A deployment scaffolding for Windows hardware nodes + VM app nodes.
+- `develop` now includes phase A split deployment scaffolding.
+- `develop` now includes Phase B kickoff files for Windows-hardware + VM-app runtime split.
 - `main` currently tracks phase 5 merged baseline.
 - GUI demo commands are routed to task Action/Services in ROS2 mode.
-- Next target: complete cross-machine ROS2 validation, then migrate hardware nodes to Windows host side.
+- Next target: complete split-mode cross-machine regression and then move to 6b simulation-policy integration.
