@@ -42,10 +42,11 @@ Updated:
 Before launching Windows hardware nodes, make sure project ROS2 packages are built on Windows:
 
 ```powershell
-cd C:\Users\whisp\Desktop\大一年度项目\programme
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
+cd $PROJECT_ROOT
 . .\deploy\windows\env_ros2_windows.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat
 
-cd .\ros2_ws
+cd "$PROJECT_ROOT\ros2_ws"
 colcon build --merge-install --symlink-install --packages-select tactile_interfaces tactile_hardware tactile_bringup
 ```
 
@@ -54,7 +55,8 @@ After build, `ros2_ws\install\local_setup.bat` will be auto-detected by `start_h
 If you hit `VisualStudioVersion is not set`, use the helper script instead:
 
 ```powershell
-cd C:\Users\whisp\Desktop\大一年度项目\programme
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
+cd $PROJECT_ROOT
 . .\deploy\windows\build_ws_minimal.ps1 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -DomainId 0
 ```
 
@@ -63,7 +65,8 @@ This script tries to auto-load MSVC build environment and gives an install hint 
 ## Windows Host Commands
 
 ```powershell
-cd C:\Users\whisp\Desktop\大一年度项目\programme
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
+cd $PROJECT_ROOT
 
 . .\deploy\windows\env_ros2_windows.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat
 
@@ -77,7 +80,8 @@ cd C:\Users\whisp\Desktop\大一年度项目\programme
 RealSense-only mode (recommended when your current focus is camera stream only):
 
 ```powershell
-cd C:\Users\whisp\Desktop\大一年度项目\programme
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
+cd $PROJECT_ROOT
 . .\deploy\windows\start_realsense_only.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -Execute
 ```
 

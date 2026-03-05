@@ -22,8 +22,16 @@ What it does:
 Command (PowerShell):
 
 ```powershell
-cd C:\Users\whisp\Desktop\...your-repo...\programme
-. .\deploy\windows\start_realsense_ready.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -DomainId 0 -TopicTimeoutSec 20 -HzSampleSec 10 -MinColorHz 3.0 -MinDepthHz 3.0
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
+cd $PROJECT_ROOT
+. .\deploy\windows\start_realsense_ready.ps1 `
+  -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" `
+  -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" `
+  -DomainId 0 `
+  -TopicTimeoutSec 20 `
+  -HzSampleSec 10 `
+  -MinColorHz 3.0 `
+  -MinDepthHz 3.0
 ```
 
 Success example:

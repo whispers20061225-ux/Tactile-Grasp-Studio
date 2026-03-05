@@ -14,12 +14,12 @@ This guide is the minimal command flow to start the ROS2 RealSense node on Windo
 2. ROS2 setup script exists:
    - `C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat`
 3. Set project root once in each new terminal:
-   - `$PROJECT_ROOT = "C:\Users\whisp\Desktop\...your-repo...\programme"`
+   - `$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"` (use ASCII path only)
 
 Example:
 
 ```powershell
-$PROJECT_ROOT = "C:\Users\whisp\Desktop\...your-repo...\programme"
+$PROJECT_ROOT = "C:\Users\whisp\Desktop\dayi\programme"
 ```
 
 ## Terminal 1: Build minimal workspace
@@ -34,7 +34,7 @@ Expected result:
 - `Summary: 2 packages finished`
 - `Build finished successfully.`
 
-## Terminal 2: Start RealSense node (Windows)
+## Terminal 2A: Start RealSense node (Windows)
 
 ```powershell
 cd $PROJECT_ROOT
@@ -52,6 +52,26 @@ Note:
 
 - Current default uses `realsense_watchdog.ps1` under the hood.
 - Watchdog automatically restarts RealSense node when consecutive sampling windows are below threshold.
+
+
+## Terminal 2B (Recommended): One-click ready check
+
+```powershell
+cd $PROJECT_ROOT
+. .\deploy\windows\start_realsense_ready.ps1 `
+  -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" `
+  -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" `
+  -DomainId 0 `
+  -TopicTimeoutSec 20 `
+  -HzSampleSec 10 `
+  -MinColorHz 3.0 `
+  -MinDepthHz 3.0
+```
+
+Expected result:
+
+- script retries startup and validates topic/hz readiness
+- final line prints: `[READY] You can now start VM one-click debug script.`
 
 ## Optional: Run watchdog directly in foreground
 
