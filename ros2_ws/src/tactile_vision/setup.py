@@ -17,7 +17,6 @@ setup(
     maintainer_email="whisp@users.noreply.github.com",
     description="Vision bridge nodes for phase 6 ROS2 migration.",
     license="MIT",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "realsense_monitor_node = tactile_vision.realsense_monitor_node:main",

@@ -20,6 +20,38 @@ if (-not (Test-Path $WorkspaceRoot)) {
 
 . (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -DomainId $DomainId
 
+function Ensure-PythonBuildCompat {
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Error "Python is not available in current ROS2 environment."
+        return $false
+    }
+
+    python -c "import pkg_resources" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        return $true
+    }
+
+    Write-Warning "Detected setuptools runtime incompatibility (pkg_resources missing)."
+    Write-Host "Applying compatible setuptools pin (<81) for colcon/ament build..."
+    python -m pip install "setuptools<81"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to install compatible setuptools. Run: python -m pip install \"setuptools<81\""
+        return $false
+    }
+
+    python -c "import pkg_resources" 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "pkg_resources is still unavailable after setuptools downgrade."
+        return $false
+    }
+
+    return $true
+}
+
+if (-not (Ensure-PythonBuildCompat)) {
+    exit 1
+}
+
 function Import-VsBuildEnv {
     if ((Get-Command cl.exe -ErrorAction SilentlyContinue) -and $env:VisualStudioVersion) {
         return $true

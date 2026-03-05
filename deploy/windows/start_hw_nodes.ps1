@@ -77,8 +77,8 @@ if ($StartRealsense) {
     } elseif ($hasRealsenseFallbackPkg) {
         if (-not (Test-PythonModule -ModuleName "pyrealsense2")) {
             Write-Warning "Fallback node requires python module 'pyrealsense2', but it is missing."
-            Write-Warning "Install hint: python -m pip install --upgrade pip setuptools wheel"
             Write-Warning "Install hint: python -m pip install pyrealsense2"
+            Write-Warning "If build tools fail with pkg_resources missing, run: python -m pip install \"setuptools<81\""
             $StartRealsense = $false
         } else {
         $realsenseMode = "tactile_vision.realsense_camera_node"
