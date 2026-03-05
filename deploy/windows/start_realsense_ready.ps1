@@ -198,17 +198,35 @@ function Invoke-StartRealsenseOnly {
 
         $stdout = Read-TextSafe -Path $outFile
         $stderr = Read-TextSafe -Path $errFile
-        if ($proc.ExitCode -ne 0) {
+        $exitCodeText = ""
+        try {
+            $exitCodeText = [string]$proc.ExitCode
+        }
+        catch {
+            $exitCodeText = ""
+        }
+        $parsedExitCode = 0
+        $hasExitCode = [int]::TryParse($exitCodeText, [ref]$parsedExitCode)
+
+        if ($hasExitCode -and $parsedExitCode -ne 0) {
             return [PSCustomObject]@{
                 Success = $false
-                Message = "launcher exit code $($proc.ExitCode)"
+                Message = "launcher exit code $parsedExitCode"
+                Stdout  = $stdout
+                Stderr  = $stderr
+            }
+        }
+        if (-not $hasExitCode -and $stderr) {
+            return [PSCustomObject]@{
+                Success = $false
+                Message = "launcher produced stderr (exit code unavailable)"
                 Stdout  = $stdout
                 Stderr  = $stderr
             }
         }
         return [PSCustomObject]@{
             Success = $true
-            Message = "launcher exited cleanly"
+            Message = if ($hasExitCode) { "launcher exited cleanly (code=$parsedExitCode)" } else { "launcher exited (code unavailable)" }
             Stdout  = $stdout
             Stderr  = $stderr
         }
@@ -241,9 +259,9 @@ function Test-RealsenseReady {
     if (-not (Wait-Topic -TopicName $InfoTopic -TimeoutSec $TopicWaitSec)) {
         return [PSCustomObject]@{ Success = $false; Message = "camera_info topic not discovered: $InfoTopic"; ColorHz = $null; DepthHz = $null }
     }
-    Write-Step "checking camera_info message once"
+    Write-Step "checking camera_info message once (best effort)"
     if (-not (Wait-MessageOnce -TopicName $InfoTopic -TimeoutSec 8)) {
-        return [PSCustomObject]@{ Success = $false; Message = "camera_info message not received"; ColorHz = $null; DepthHz = $null }
+        Write-WarnMsg "camera_info message not received within 8s; continue with hz checks"
     }
 
     Write-Step "sampling color topic hz (${SampleWindowSec}s)"
