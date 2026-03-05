@@ -2,8 +2,9 @@ param(
     [string]$RosSetup = "C:\\pixi_ws\\ros2-windows\\ros2-windows\\local_setup.bat",
     [int]$DomainId = 0,
     [string]$WorkspaceRoot = "",
-    [string[]]$Packages = @("tactile_interfaces", "tactile_vision", "tactile_bringup"),
-    [switch]$Clean = $false
+    [string[]]$Packages = @("tactile_interfaces", "tactile_vision"),
+    [switch]$Clean = $false,
+    [switch]$UseSymlinkInstall = $false
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -102,7 +103,50 @@ if (-not (Import-VsBuildEnv)) {
     exit 1
 }
 
-Push-Location $WorkspaceRoot
+function Mount-AsciiWorkspaceIfNeeded {
+    param([Parameter(Mandatory = $true)][string]$PathToMap)
+
+    $resolved = (Resolve-Path $PathToMap).Path
+    if ($resolved -notmatch "[^\u0000-\u007F]") {
+        return @{
+            WorkspacePath = $resolved
+            MappedDrive = $null
+        }
+    }
+
+    $usedDrives = @([System.IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.TrimEnd('\') })
+    $candidateLetters = @("R", "S", "T", "U", "V", "W", "X", "Y", "Z")
+    foreach ($letter in $candidateLetters) {
+        $drive = "${letter}:"
+        if ($usedDrives -contains $drive) {
+            continue
+        }
+
+        cmd.exe /c "subst $drive `"$resolved`"" | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Warning "Detected non-ASCII workspace path; using temporary mapped drive $drive to avoid rosidl path encoding issues."
+            return @{
+                WorkspacePath = "$drive\\"
+                MappedDrive = $drive
+            }
+        }
+    }
+
+    throw "Unable to map non-ASCII workspace path to a temporary drive. Please free one drive letter in R:..Z: and retry."
+}
+
+function Unmount-AsciiWorkspace {
+    param([string]$MappedDrive)
+    if (-not $MappedDrive) {
+        return
+    }
+    cmd.exe /c "subst $MappedDrive /D" | Out-Null
+}
+
+$workspaceContext = Mount-AsciiWorkspaceIfNeeded -PathToMap $WorkspaceRoot
+$buildWorkspace = $workspaceContext.WorkspacePath
+
+Push-Location $buildWorkspace
 try {
     if ($Clean) {
         Remove-Item -Recurse -Force build, install, log -ErrorAction SilentlyContinue
@@ -110,10 +154,14 @@ try {
 
     $args = @(
         "build",
-        "--merge-install",
-        "--symlink-install",
-        "--packages-select"
-    ) + $Packages
+        "--merge-install"
+    )
+
+    if ($UseSymlinkInstall) {
+        $args += "--symlink-install"
+    }
+
+    $args += @("--packages-select") + $Packages
 
     Write-Host "Running: colcon $($args -join ' ')"
     & colcon @args
@@ -123,6 +171,7 @@ try {
 }
 finally {
     Pop-Location
+    Unmount-AsciiWorkspace -MappedDrive $workspaceContext.MappedDrive
 }
 
 Write-Host "Build finished successfully."

@@ -46,6 +46,56 @@ $ddsFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_window
 $ddsRuntimeFile = Join-Path $env:TEMP "programme_cyclonedds_windows.xml"
 Copy-Item -Path $ddsFile -Destination $ddsRuntimeFile -Force
 
+# Ensure native process stdout is decoded as UTF-8 in this shell.
+# This avoids garbled non-ASCII paths when sourcing colcon-generated setup scripts.
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+$env:PYTHONIOENCODING = "utf-8"
+
+function Import-SetupScript {
+    param(
+        [string]$SetupPath,
+        [string]$Label = "setup"
+    )
+
+    if (-not $SetupPath) {
+        return
+    }
+    if (-not (Test-Path $SetupPath)) {
+        Write-Warning "$Label script not found: $SetupPath"
+        return
+    }
+
+    $ext = [System.IO.Path]::GetExtension($SetupPath).ToLowerInvariant()
+    if ($ext -eq ".ps1") {
+        . $SetupPath
+        return
+    }
+
+    if ($ext -eq ".bat" -or $ext -eq ".cmd") {
+        $ps1Candidate = [System.IO.Path]::ChangeExtension($SetupPath, ".ps1")
+        if (Test-Path $ps1Candidate) {
+            . $ps1Candidate
+            return
+        }
+
+        $dump = cmd.exe /c "call `"$SetupPath`" && set"
+        foreach ($line in $dump) {
+            if ($line -match "^(.*?)=(.*)$") {
+                $name = $matches[1]
+                $value = $matches[2]
+                if ($name) {
+                    [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
+                }
+            }
+        }
+        return
+    }
+
+    Write-Warning "Unsupported $Label script type: $SetupPath"
+}
+
 if ($CleanConda) {
     $env:PATH = Remove-CondaEntriesFromPath -PathValue $env:PATH
     foreach ($name in @(
@@ -61,28 +111,7 @@ if ($CleanConda) {
         [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
 }
-
-if (Test-Path $RosSetup) {
-    $ext = [System.IO.Path]::GetExtension($RosSetup).ToLowerInvariant()
-    if ($ext -eq ".ps1") {
-        . $RosSetup
-    } elseif ($ext -eq ".bat" -or $ext -eq ".cmd") {
-        $dump = cmd.exe /c "call `"$RosSetup`" && set"
-        foreach ($line in $dump) {
-            if ($line -match "^(.*?)=(.*)$") {
-                $name = $matches[1]
-                $value = $matches[2]
-                if ($name) {
-                    [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
-                }
-            }
-        }
-    } else {
-        Write-Warning "Unsupported ROS2 setup script type: $RosSetup"
-    }
-} else {
-    Write-Warning "ROS2 setup script not found: $RosSetup"
-}
+Import-SetupScript -SetupPath $RosSetup -Label "ROS2 setup"
 
 if (-not $PixiOpenSslBin -and (Test-Path $RosSetup)) {
     $rosRoot = Split-Path -Parent $RosSetup
@@ -106,11 +135,7 @@ if ($PixiOpenSslBin) {
     Prepend-Path -PathValue $PixiOpenSslBin
 }
 
-if ($WorkspaceSetup -and (Test-Path $WorkspaceSetup)) {
-    . $WorkspaceSetup
-} elseif ($WorkspaceSetup) {
-    Write-Warning "Workspace setup script not found: $WorkspaceSetup"
-}
+Import-SetupScript -SetupPath $WorkspaceSetup -Label "Workspace setup"
 
 $env:ROS_DOMAIN_ID = "$DomainId"
 $env:RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"

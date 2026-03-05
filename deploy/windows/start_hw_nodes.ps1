@@ -15,7 +15,7 @@ $shellExe = "pwsh"
 if (-not (Get-Command $shellExe -ErrorAction SilentlyContinue)) {
     $shellExe = "powershell"
 }
-$defaultWorkspaceSetup = Join-Path $projectRoot "ros2_ws\\install\\local_setup.bat"
+$defaultWorkspaceSetup = Join-Path $projectRoot "ros2_ws\\install\\local_setup.ps1"
 
 if (-not $WorkspaceSetup -and (Test-Path $defaultWorkspaceSetup)) {
     $WorkspaceSetup = $defaultWorkspaceSetup
