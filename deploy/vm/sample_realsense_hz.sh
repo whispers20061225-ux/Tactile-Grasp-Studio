@@ -40,15 +40,24 @@ wait_for_topic() {
 sample_hz() {
   local topic="$1"
   local window="$2"
+  local out_file
+  local err_file
+  local hz_pid
   local output
-  local rc
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+
   set +e
-  output="$(timeout "${window}s" ros2 topic hz "${topic}" 2>&1)"
-  rc=$?
+  stdbuf -oL -eL ros2 topic hz "${topic}" >"${out_file}" 2>"${err_file}" &
+  hz_pid=$!
   set -e
-  if [[ ${rc} -ne 0 && ${rc} -ne 124 ]]; then
-    return 1
-  fi
+
+  sleep "${window}"
+  kill "${hz_pid}" >/dev/null 2>&1 || true
+  wait "${hz_pid}" >/dev/null 2>&1 || true
+
+  output="$(cat "${out_file}" "${err_file}" 2>/dev/null || true)"
+  rm -f "${out_file}" "${err_file}" || true
   echo "${output}" | awk '/average rate/ {print $3}' | tail -n 1
 }
 

@@ -11,6 +11,9 @@ HZ_RETRY_COUNT="${6:-3}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
+# refresh graph cache before camera checks
+ros2 daemon stop >/dev/null 2>&1 || true
+ros2 daemon start >/dev/null 2>&1 || true
 
 COLOR_TOPIC="/camera/camera/color/image_raw"
 DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
@@ -49,15 +52,24 @@ wait_for_message() {
 sample_hz_once() {
   local topic="$1"
   local sample_sec="$2"
+  local out_file
+  local err_file
+  local hz_pid
   local output
-  local rc
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+
   set +e
-  output="$(timeout "${sample_sec}s" ros2 topic hz "${topic}" 2>&1)"
-  rc=$?
+  stdbuf -oL -eL ros2 topic hz "${topic}" >"${out_file}" 2>"${err_file}" &
+  hz_pid=$!
   set -e
-  if [[ ${rc} -ne 0 && ${rc} -ne 124 ]]; then
-    return 1
-  fi
+
+  sleep "${sample_sec}"
+  kill "${hz_pid}" >/dev/null 2>&1 || true
+  wait "${hz_pid}" >/dev/null 2>&1 || true
+
+  output="$(cat "${out_file}" "${err_file}" 2>/dev/null || true)"
+  rm -f "${out_file}" "${err_file}" || true
   echo "${output}" | awk '/average rate/ {print $3}' | tail -n 1
 }
 
