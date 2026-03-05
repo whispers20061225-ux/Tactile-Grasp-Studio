@@ -28,6 +28,16 @@ function Get-PreferredShell {
     return "powershell"
 }
 
+function Read-TextSafe {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+    $content = [string](Get-Content -Raw -Path $Path -ErrorAction SilentlyContinue)
+    return $content.Trim()
+}
+
 function Wait-Topic {
     param(
         [string]$TopicName,
@@ -173,8 +183,8 @@ function Invoke-StartRealsenseOnly {
 
         if (-not $exited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            $stdout = if (Test-Path $outFile) { (Get-Content -Raw $outFile).Trim() } else { "" }
-            $stderr = if (Test-Path $errFile) { (Get-Content -Raw $errFile).Trim() } else { "" }
+            $stdout = Read-TextSafe -Path $outFile
+            $stderr = Read-TextSafe -Path $errFile
             return [PSCustomObject]@{
                 Success = $false
                 Message = "launcher timed out after ${TimeoutSec}s"
@@ -183,8 +193,8 @@ function Invoke-StartRealsenseOnly {
             }
         }
 
-        $stdout = if (Test-Path $outFile) { (Get-Content -Raw $outFile).Trim() } else { "" }
-        $stderr = if (Test-Path $errFile) { (Get-Content -Raw $errFile).Trim() } else { "" }
+        $stdout = Read-TextSafe -Path $outFile
+        $stderr = Read-TextSafe -Path $errFile
         if ($proc.ExitCode -ne 0) {
             return [PSCustomObject]@{
                 Success = $false
