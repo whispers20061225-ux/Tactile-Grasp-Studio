@@ -5,6 +5,7 @@ param(
     [string]$RealsenseSerial = "",
     [bool]$WarmupRosGraph = $true,
     [switch]$Foreground = $false,
+    [switch]$UseRealsenseWatchdog = $true,
     [switch]$Execute = $false
 )
 
@@ -19,4 +20,5 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     -StartArm:$false `
     -StartRealsense:$true `
     -Foreground:$Foreground `
+    -UseRealsenseWatchdog:$UseRealsenseWatchdog `
     -Execute:$Execute

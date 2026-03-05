@@ -49,7 +49,26 @@ function Wait-Topic {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $topics = & ros2 topic list 2>$null
+        $topics = @()
+        $oldNativeBehavior = $null
+        $hasNativePref = $false
+        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+            $hasNativePref = $true
+            $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+            $Global:PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $topics = & ros2 topic list 2>$null
+        }
+        catch {
+            $topics = @()
+        }
+        finally {
+            if ($hasNativePref) {
+                $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+            }
+        }
+
         if ($LASTEXITCODE -eq 0 -and ($topics -contains $TopicName)) {
             return $true
         }
@@ -116,7 +135,10 @@ function Stop-RealsenseProcesses {
         "realsense_watchdog.ps1",
         "realsense_camera_node",
         "realsense2_camera_node",
-        "realsense2_camera"
+        "realsense2_camera",
+        '"topic" "hz" "/camera/camera',
+        '"topic" "echo" "/camera/camera',
+        '"topic" "list"'
     )
     $killed = 0
     $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
@@ -151,6 +173,7 @@ function Invoke-StartRealsenseOnly {
         [int]$RosDomainId,
         [string]$SerialNo,
         [bool]$WarmupGraph,
+        [bool]$UseWatchdog = $false,
         [int]$TimeoutSec
     )
 
@@ -161,7 +184,8 @@ function Invoke-StartRealsenseOnly {
     $quotedScriptPath = "'" + ($scriptPath -replace "'", "''") + "'"
     $quotedRosSetupPath = "'" + ($RosSetupPath -replace "'", "''") + "'"
     $warmupToken = if ($WarmupGraph) { '$true' } else { '$false' }
-    $launchCommand = "& { & $quotedScriptPath -RosSetup $quotedRosSetupPath -DomainId $RosDomainId -WarmupRosGraph $warmupToken -Execute"
+    $watchdogToken = if ($UseWatchdog) { '$true' } else { '$false' }
+    $launchCommand = "& { & $quotedScriptPath -RosSetup $quotedRosSetupPath -DomainId $RosDomainId -WarmupRosGraph $warmupToken -UseRealsenseWatchdog:$watchdogToken -Execute"
     if ($WorkspaceSetupPath) {
         $quotedWorkspaceSetupPath = "'" + ($WorkspaceSetupPath -replace "'", "''") + "'"
         $launchCommand += " -WorkspaceSetup $quotedWorkspaceSetupPath"
@@ -307,6 +331,7 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
         -RosDomainId $DomainId `
         -SerialNo $RealsenseSerial `
         -WarmupGraph $WarmupRosGraph `
+        -UseWatchdog $false `
         -TimeoutSec $LauncherTimeoutSec
     if (-not $launchResult.Success) {
         Write-WarnMsg ("attempt $attempt launcher failed: " + $launchResult.Message)
@@ -359,5 +384,5 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
 $lastMessage = if ($lastResult -and $lastResult.Message) { $lastResult.Message } else { "unknown failure" }
 Write-Fail ("RealSense did not reach ready state after {0} attempts. Last error: {1}" -f $StartupRetryCount, $lastMessage)
 Write-Host "[DIAG] current camera topics:"
-& ros2 topic list | Select-String "camera/camera"
+try { & ros2 topic list 2>$null | Select-String "camera/camera" } catch { Write-WarnMsg "unable to list camera topics for diagnostics" }
 exit 1
