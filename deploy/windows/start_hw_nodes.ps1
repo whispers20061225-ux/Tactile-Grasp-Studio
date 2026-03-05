@@ -33,8 +33,25 @@ if (-not $ArmParamFile) {
 
 function Test-RosPackage {
     param([string]$PackageName)
-    & ros2 pkg prefix $PackageName 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    $oldNativeBehavior = $null
+    $hasNativePref = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePref = $true
+        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+        $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        & ros2 pkg prefix $PackageName 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+        }
+    }
 }
 
 function Test-PythonModule {
@@ -42,8 +59,25 @@ function Test-PythonModule {
     if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
         return $false
     }
-    python -c "import $ModuleName" 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
+    $oldNativeBehavior = $null
+    $hasNativePref = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePref = $true
+        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+        $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        python -c "import $ModuleName" 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+        }
+    }
 }
 
 $realsenseCmd = ""
