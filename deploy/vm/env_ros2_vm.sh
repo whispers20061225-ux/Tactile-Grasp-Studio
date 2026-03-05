@@ -7,17 +7,32 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROS_SETUP="/opt/ros/jazzy/setup.bash"
 WS_SETUP="${PROJECT_ROOT}/ros2_ws/install/setup.bash"
 
-if [[ -f "${ROS_SETUP}" ]]; then
+source_setup_compat() {
+  local setup_path="$1"
+  local had_nounset=0
+  case "$-" in
+    *u*) had_nounset=1 ;;
+  esac
+
+  # Some ROS setup scripts read vars that may be unset under `set -u`.
+  export AMENT_TRACE_SETUP_FILES="${AMENT_TRACE_SETUP_FILES:-}"
+  set +u
   # shellcheck disable=SC1090
-  source "${ROS_SETUP}"
+  source "${setup_path}"
+  if [[ "${had_nounset}" -eq 1 ]]; then
+    set -u
+  fi
+}
+
+if [[ -f "${ROS_SETUP}" ]]; then
+  source_setup_compat "${ROS_SETUP}"
 else
   echo "ROS2 setup not found: ${ROS_SETUP}" >&2
   exit 1
 fi
 
 if [[ -f "${WS_SETUP}" ]]; then
-  # shellcheck disable=SC1090
-  source "${WS_SETUP}"
+  source_setup_compat "${WS_SETUP}"
 fi
 
 export ROS_DOMAIN_ID="${DOMAIN_ID}"

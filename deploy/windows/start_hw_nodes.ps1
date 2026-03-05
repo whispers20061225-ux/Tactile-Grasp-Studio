@@ -6,6 +6,7 @@ param(
     [string]$RealsenseSerial = "",
     [switch]$StartArm = $true,
     [switch]$StartRealsense = $true,
+    [switch]$Foreground = $false,
     [switch]$Execute = $false
 )
 
@@ -124,6 +125,21 @@ if ($StartArm) {
     Write-Host "  [Arm]       $armCmd"
 }
 Write-Host ""
+
+if ($Foreground) {
+    if ($StartRealsense -and -not $StartArm) {
+        Write-Host "Foreground mode: running RealSense node in current terminal."
+        Invoke-Expression $realsenseCmd
+        exit $LASTEXITCODE
+    }
+    if ($StartArm -and -not $StartRealsense) {
+        Write-Host "Foreground mode: running arm node in current terminal."
+        Invoke-Expression $armCmd
+        exit $LASTEXITCODE
+    }
+    Write-Error "Foreground mode supports exactly one node at a time. Use -StartArm or -StartRealsense."
+    exit 1
+}
 
 if (-not $Execute) {
     Write-Host "Dry-run mode. Re-run with -Execute to spawn new PowerShell windows."

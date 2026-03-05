@@ -3,6 +3,7 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$RealsenseSerial = "",
+    [switch]$Foreground = $false,
     [switch]$Execute = $false
 )
 
@@ -15,4 +16,5 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     -RealsenseSerial $RealsenseSerial `
     -StartArm:$false `
     -StartRealsense:$true `
+    -Foreground:$Foreground `
     -Execute:$Execute
