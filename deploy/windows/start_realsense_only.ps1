@@ -3,6 +3,7 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$RealsenseSerial = "",
+    [bool]$WarmupRosGraph = $true,
     [switch]$Foreground = $false,
     [switch]$Execute = $false
 )
@@ -14,6 +15,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     -WorkspaceSetup $WorkspaceSetup `
     -DomainId $DomainId `
     -RealsenseSerial $RealsenseSerial `
+    -WarmupRosGraph $WarmupRosGraph `
     -StartArm:$false `
     -StartRealsense:$true `
     -Foreground:$Foreground `

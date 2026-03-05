@@ -4,7 +4,8 @@ param(
     [string]$WorkspaceSetup = "",
     [bool]$CleanConda = $true,
     [string]$PixiOpenSslBin = "",
-    [bool]$WarmupRosGraph = $false
+    [bool]$WarmupRosGraph = $false,
+    [int]$RosDaemonCmdTimeoutSec = 8
 )
 
 function Remove-CondaEntriesFromPath {
@@ -97,6 +98,30 @@ function Import-SetupScript {
     Write-Warning "Unsupported $Label script type: $SetupPath"
 }
 
+function Invoke-Ros2DaemonCommand {
+    param(
+        [string]$Subcommand,
+        [int]$TimeoutSec = 8
+    )
+
+    if (-not (Get-Command ros2 -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+
+    try {
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("daemon", $Subcommand) -PassThru -WindowStyle Hidden
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    }
+    catch {
+        return $false
+    }
+}
+
 if ($CleanConda) {
     $env:PATH = Remove-CondaEntriesFromPath -PathValue $env:PATH
     foreach ($name in @(
@@ -145,16 +170,11 @@ $env:ROS_AUTOMATIC_DISCOVERY_RANGE = "SUBNET"
 $env:CYCLONEDDS_URI = $ddsRuntimeFile
 
 if ($WarmupRosGraph -and (Get-Command ros2 -ErrorAction SilentlyContinue)) {
-    try {
-        & ros2 daemon stop 1>$null 2>$null
-    } catch {
-        # ignore
-    }
+    $stopOk = Invoke-Ros2DaemonCommand -Subcommand "stop" -TimeoutSec $RosDaemonCmdTimeoutSec
     Start-Sleep -Milliseconds 200
-    try {
-        & ros2 daemon start 1>$null 2>$null
-    } catch {
-        # ignore
+    $startOk = Invoke-Ros2DaemonCommand -Subcommand "start" -TimeoutSec $RosDaemonCmdTimeoutSec
+    if (-not ($stopOk -and $startOk)) {
+        Write-Warning "ROS graph warmup partially failed or timed out (stop=$stopOk, start=$startOk). Continuing."
     }
 }
 

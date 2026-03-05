@@ -3,6 +3,7 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$RealsenseSerial = "",
+    [bool]$WarmupRosGraph = $false,
     [int]$TopicTimeoutSec = 20,
     [int]$HzSampleSec = 10,
     [double]$MinColorHz = 3.0,
@@ -136,6 +137,7 @@ function Invoke-StartRealsenseOnly {
         [string]$WorkspaceSetupPath,
         [int]$RosDomainId,
         [string]$SerialNo,
+        [bool]$WarmupGraph,
         [int]$TimeoutSec
     )
 
@@ -154,6 +156,8 @@ function Invoke-StartRealsenseOnly {
         $RosSetupPath,
         "-DomainId",
         $RosDomainId.ToString(),
+        "-WarmupRosGraph",
+        $WarmupGraph.ToString(),
         "-Execute"
     )
     if ($WorkspaceSetupPath) {
@@ -249,7 +253,7 @@ function Test-RealsenseReady {
 }
 
 Write-Step "loading ROS2 Windows environment"
-. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId -WarmupRosGraph $true
+. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId -WarmupRosGraph $WarmupRosGraph
 
 if (-not (Get-Command ros2 -ErrorAction SilentlyContinue)) {
     Write-Fail "ros2 command is unavailable after environment setup."
@@ -271,6 +275,7 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
         -WorkspaceSetupPath $WorkspaceSetup `
         -RosDomainId $DomainId `
         -SerialNo $RealsenseSerial `
+        -WarmupGraph $WarmupRosGraph `
         -TimeoutSec $LauncherTimeoutSec
     if (-not $launchResult.Success) {
         Write-WarnMsg ("attempt $attempt launcher failed: " + $launchResult.Message)
