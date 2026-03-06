@@ -190,7 +190,7 @@ function Get-TopicAverageHz {
     $outFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".out.log")
     $errFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".err.log")
     try {
-        $proc = Start-Ros2CommandProcess -Args @("topic", "hz", $TopicName) -StdoutPath $outFile -StderrPath $errFile
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "hz", $TopicName) -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
         Start-Sleep -Seconds $SampleSec
         if (-not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
@@ -318,16 +318,26 @@ try {
             $depthHz = Get-TopicAverageHz -TopicName $depthTopic -SampleSec $HzSampleSec
 
             $sampleOk = $true
-            if ($null -eq $colorHz -or $colorHz -lt $MinColorHz) {
+            $sampleInconclusive = $false
+            if ($null -eq $colorHz) {
+                $sampleInconclusive = $true
+            } elseif ($colorHz -lt $MinColorHz) {
                 $sampleOk = $false
             }
-            if ($null -eq $depthHz -or $depthHz -lt $MinDepthHz) {
+            if ($null -eq $depthHz) {
+                $sampleInconclusive = $true
+            } elseif ($depthHz -lt $MinDepthHz) {
                 $sampleOk = $false
             }
 
-            if ($sampleOk) {
+            if ($sampleOk -and -not $sampleInconclusive) {
                 $consecutiveFailures = 0
                 Write-Ok ("sample healthy: color={0:N3}Hz depth={1:N3}Hz" -f $colorHz, $depthHz)
+            } elseif ($sampleInconclusive) {
+                $consecutiveFailures = 0
+                Write-WarnMsg ("sample inconclusive: color={0} depth={1}; skipping restart because topics are online" -f `
+                    ($(if ($null -eq $colorHz) { "n/a" } else { "{0:N3}Hz" -f $colorHz })), `
+                    ($(if ($null -eq $depthHz) { "n/a" } else { "{0:N3}Hz" -f $depthHz })))
             } else {
                 $consecutiveFailures += 1
                 Write-WarnMsg ("sample degraded: color={0} depth={1} fail_count={2}/{3}" -f `

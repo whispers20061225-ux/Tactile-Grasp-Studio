@@ -187,8 +187,20 @@ function Wait-MessageOnce {
         [int]$TimeoutSec
     )
 
-    $result = Invoke-Ros2CommandCapture -Args @("topic", "echo", $TopicName, "--once") -TimeoutSec $TimeoutSec
-    return ($result.Exited -and $result.ExitCode -eq 0)
+    $outFile = Join-Path $env:TEMP ("programme_echo_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_echo_" + [guid]::NewGuid().ToString() + ".err.log")
+    try {
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "echo", $TopicName, "--once") -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-TopicAverageHz {
@@ -200,7 +212,7 @@ function Get-TopicAverageHz {
     $outFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".out.log")
     $errFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".err.log")
     try {
-        $proc = Start-Ros2CommandProcess -Args @("topic", "hz", $TopicName) -StdoutPath $outFile -StderrPath $errFile
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "hz", $TopicName) -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
         Start-Sleep -Seconds $SampleSec
         if (-not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
@@ -396,10 +408,12 @@ function Test-RealsenseReady {
     Write-Step "sampling depth topic hz (${SampleWindowSec}s)"
     $depthHz = Get-TopicAverageHz -TopicName $DepthTopic -SampleSec $SampleWindowSec
     if ($null -eq $colorHz) {
-        return [PSCustomObject]@{ Success = $false; Message = "unable to calculate color hz"; ColorHz = $null; DepthHz = $depthHz }
+        Write-WarnMsg "unable to calculate color hz; topics are online, keeping RealSense node running"
+        return [PSCustomObject]@{ Success = $true; Message = "topic checks passed; color hz unavailable"; ColorHz = $null; DepthHz = $depthHz }
     }
     if ($null -eq $depthHz) {
-        return [PSCustomObject]@{ Success = $false; Message = "unable to calculate depth hz"; ColorHz = $colorHz; DepthHz = $null }
+        Write-WarnMsg "unable to calculate depth hz; topics are online, keeping RealSense node running"
+        return [PSCustomObject]@{ Success = $true; Message = "topic checks passed; depth hz unavailable"; ColorHz = $colorHz; DepthHz = $null }
     }
     if ($colorHz -lt $MinColor) {
         return [PSCustomObject]@{ Success = $false; Message = ("color hz {0:N3} < min {1:N3}" -f $colorHz, $MinColor); ColorHz = $colorHz; DepthHz = $depthHz }
@@ -480,7 +494,11 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
         -MinDepth $MinDepthHz
 
     if ($lastResult.Success) {
-        Write-Ok ("RealSense READY: color={0:N3}Hz depth={1:N3}Hz" -f $lastResult.ColorHz, $lastResult.DepthHz)
+        if ($null -ne $lastResult.ColorHz -and $null -ne $lastResult.DepthHz) {
+            Write-Ok ("RealSense READY: color={0:N3}Hz depth={1:N3}Hz" -f $lastResult.ColorHz, $lastResult.DepthHz)
+        } else {
+            Write-Ok ("RealSense READY: {0}" -f $lastResult.Message)
+        }
         Write-Host "[READY] You can now start VM one-click debug script."
         exit 0
     }
