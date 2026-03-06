@@ -4658,6 +4658,11 @@ class ControlPanel(QWidget):
 
 
 
+        self.live_data_label = QLabel("Force: N/A")
+        self.live_data_label.setWordWrap(True)
+        self.live_data_label.setStyleSheet("color: #cccccc;")
+        group_layout.addWidget(self.live_data_label)
+
         self.data_display = QTextEdit()
 
 
@@ -4675,6 +4680,8 @@ class ControlPanel(QWidget):
 
 
         self.data_display.setReadOnly(True)
+        self.data_display.setUndoRedoEnabled(False)
+        self.data_display.document().setMaximumBlockCount(200)
 
 
 
@@ -8591,63 +8598,8 @@ class ControlPanel(QWidget):
 
 
 
-            self.data_display.append(f"力数据: [{force_str}]")
-
-
-
-
-
-
-
-            
-
-
-
-
-
-
-
-            # 限制显示行数
-
-
-
-
-
-
-
-            if self.data_display.document().lineCount() > 100:
-
-
-
-
-
-
-
-                cursor = self.data_display.textCursor()
-
-
-
-
-
-
-
-                cursor.movePosition(cursor.Start)
-
-
-
-
-
-
-
-                cursor.select(cursor.LineUnderCursor)
-
-
-
-
-
-
-
-                cursor.removeSelectedText()
+            if hasattr(self, "live_data_label"):
+                self.live_data_label.setText(f"Force: [{force_str}]")
 
 
 

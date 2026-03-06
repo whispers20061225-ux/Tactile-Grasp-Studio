@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
         self.data_rate = 0
         self._last_packet_label_ts = 0.0
         self._last_control_panel_data_ts = 0.0
+        self._vision_status_widget_last_ts = 0.0
+        self._vision_status_widget_interval_sec = 0.25
         
         # 数据缓冲区
         self.sensor_data_buffer = None
@@ -894,7 +896,6 @@ class MainWindow(QMainWindow):
         if self._is_pointcloud_view_active() and self._ros2_vision_latest_frame is not None:
             self._schedule_pointcloud_for_frame(self._ros2_vision_latest_frame, force=False)
 
-        self._update_vision_status_widgets()
         self._update_vision_stall_state(now=time.time(), frame_rendered=False)
 
     def _apply_analysis_result(self, task: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
@@ -957,9 +958,13 @@ class MainWindow(QMainWindow):
         if frame is not None:
             self._refresh_self_check_status(frame)
 
-    def _update_vision_status_widgets(self) -> None:
+    def _update_vision_status_widgets(self, *, force: bool = False) -> None:
         if not self.vision_viewer:
             return
+        now = time.time()
+        if not force and (now - self._vision_status_widget_last_ts) < self._vision_status_widget_interval_sec:
+            return
+        self._vision_status_widget_last_ts = now
         self.vision_viewer.update_camera_status(
             connected=self._ros2_vision_connected,
             streaming=self._ros2_vision_streaming,
@@ -1081,7 +1086,7 @@ class MainWindow(QMainWindow):
             self._ros2_vision_device_info = device_info
         if self._ros2_vision_last_frame_age_ms is not None:
             self._ros2_vision_last_upstream_frame_wall_ts = time.time() - (float(self._ros2_vision_last_frame_age_ms) / 1000.0)
-        self._update_vision_status_widgets()
+        self._update_vision_status_widgets(force=True)
 
     def _get_detection_config(self) -> Dict[str, Any]:
         """生成检测配置，兼容 DemoConfig 或 CameraConfig"""
@@ -2518,7 +2523,7 @@ class MainWindow(QMainWindow):
 
         self.vision_worker_timer = QTimer()
         self.vision_worker_timer.timeout.connect(self._poll_vision_workers)
-        self.vision_worker_timer.start(33)
+        self.vision_worker_timer.start(50)
 
         self.vision_self_check_timer = QTimer()
         self.vision_self_check_timer.timeout.connect(self._refresh_live_self_check_status)
@@ -2668,12 +2673,12 @@ class MainWindow(QMainWindow):
         
         # 更新控制面板
         now = time.time()
-        if (now - self._last_control_panel_data_ts) >= 0.2:
+        if (now - self._last_control_panel_data_ts) >= 1.0:
             self._last_control_panel_data_ts = now
             QTimer.singleShot(0, lambda: self.control_panel.update_data_display(data))
         
         # 更新数据包计数
-        if (now - self._last_packet_label_ts) >= 0.2:
+        if (now - self._last_packet_label_ts) >= 1.0:
             self._last_packet_label_ts = now
             self.packet_label.setText(f"Packets: {self.frame_count}")
     

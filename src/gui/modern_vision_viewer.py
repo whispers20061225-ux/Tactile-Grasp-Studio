@@ -309,6 +309,7 @@ class VisionViewer(QWidget):
         self.camera_streaming = False
         self.camera_calibrated = False
         self.connect_pending = False
+        self._last_camera_status_signature: Optional[Tuple[Any, ...]] = None
         self.init_ui()
         self._sync_overlay_options()
 
@@ -622,6 +623,21 @@ class VisionViewer(QWidget):
         self.camera_connected = connected
         self.camera_streaming = streaming
         self.camera_calibrated = calibrated
+        effective_rx_fps = float(rx_fps if rx_fps is not None else fps)
+        status_signature = (
+            bool(connected),
+            bool(streaming),
+            bool(calibrated),
+            str(resolution),
+            round(float(fps), 1),
+            round(effective_rx_fps, 1),
+            int(dropped_frames),
+            None if last_frame_age_ms is None else int(float(last_frame_age_ms) // 100),
+            int(stall_count),
+        )
+        if status_signature == self._last_camera_status_signature:
+            return
+        self._last_camera_status_signature = status_signature
         if connected:
             self.connection_status_label.setText("已连接")
             self.connection_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
@@ -643,7 +659,7 @@ class VisionViewer(QWidget):
             self.calibration_status_label.setStyleSheet("color: #ff6b6b;")
         self.resolution_label.setText(resolution)
         self.fps_label.setText(f"{float(fps):.1f} FPS")
-        self.rx_fps_label.setText(f"{float(rx_fps if rx_fps is not None else fps):.1f} FPS")
+        self.rx_fps_label.setText(f"{effective_rx_fps:.1f} FPS")
         self.drop_label.setText(str(int(dropped_frames)))
         self.age_label.setText("N/A" if last_frame_age_ms is None else f"{float(last_frame_age_ms):.0f} ms")
         self.stall_label.setText(str(int(stall_count)))
