@@ -6,7 +6,7 @@ latest_frame_relay_node:
     output_color_topic: "/camera/relay/color/image_raw"
     output_depth_topic: "/camera/relay/aligned_depth_to_color/image_raw"
     output_camera_info_topic: "/camera/relay/color/camera_info"
-    publish_rate_hz: 15.0
+    publish_rate_hz: 30.0
     stale_timeout_sec: 2.0
     require_depth_stream: false
     log_interval_sec: 15.0

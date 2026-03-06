@@ -3,6 +3,13 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$RealsenseSerial = "",
+    [int]$ColorWidth = 640,
+    [int]$ColorHeight = 480,
+    [int]$ColorFps = 30,
+    [int]$DepthWidth = 640,
+    [int]$DepthHeight = 480,
+    [int]$DepthFps = 30,
+    [bool]$AlignDepth = $true,
     [switch]$UseRealsense2Camera = $false,
     [int]$TopicTimeoutSec = 20,
     [int]$CheckIntervalSec = 20,
@@ -68,6 +75,8 @@ function Get-TopicAverageHz {
 }
 
 function New-RealsenseNodeArgs {
+    $alignDepthValue = $AlignDepth.ToString().ToLower()
+
     if ($UseRealsense2Camera) {
         $args = @(
             "run",
@@ -76,9 +85,9 @@ function New-RealsenseNodeArgs {
             "--ros-args",
             "-p", "enable_color:=true",
             "-p", "enable_depth:=true",
-            "-p", "align_depth.enable:=true",
-            "-p", "rgb_camera.profile:=640x480x15",
-            "-p", "depth_module.profile:=640x480x15"
+            "-p", "align_depth.enable:=$alignDepthValue",
+            "-p", "rgb_camera.profile:=${ColorWidth}x${ColorHeight}x${ColorFps}",
+            "-p", "depth_module.profile:=${DepthWidth}x${DepthHeight}x${DepthFps}"
         )
         if ($RealsenseSerial) {
             $args += @("-p", "serial_no:=$RealsenseSerial")
@@ -93,17 +102,17 @@ function New-RealsenseNodeArgs {
         "--ros-args",
         "-p", "enable_color:=true",
         "-p", "enable_depth:=true",
-        "-p", "align_depth.enable:=true",
-        "-p", "color_width:=640",
-        "-p", "color_height:=480",
-        "-p", "color_fps:=15",
-        "-p", "depth_width:=640",
-        "-p", "depth_height:=480",
-        "-p", "depth_fps:=15",
-        "-p", "frame_timeout_ms:=350",
-        "-p", "max_consecutive_timeouts:=12",
-        "-p", "restart_cooldown_sec:=3.0",
-        "-p", "capture_stale_sec:=2.0",
+        "-p", "align_depth.enable:=$alignDepthValue",
+        "-p", "color_width:=$ColorWidth",
+        "-p", "color_height:=$ColorHeight",
+        "-p", "color_fps:=$ColorFps",
+        "-p", "depth_width:=$DepthWidth",
+        "-p", "depth_height:=$DepthHeight",
+        "-p", "depth_fps:=$DepthFps",
+        "-p", "frame_timeout_ms:=500",
+        "-p", "max_consecutive_timeouts:=20",
+        "-p", "restart_cooldown_sec:=2.0",
+        "-p", "capture_stale_sec:=3.0",
         "-p", "publish_only_when_new_frame:=true"
     )
     if ($RealsenseSerial) {

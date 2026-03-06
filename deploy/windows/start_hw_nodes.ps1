@@ -4,6 +4,13 @@ param(
     [int]$DomainId = 0,
     [string]$ArmParamFile = "",
     [string]$RealsenseSerial = "",
+    [int]$ColorWidth = 640,
+    [int]$ColorHeight = 480,
+    [int]$ColorFps = 30,
+    [int]$DepthWidth = 640,
+    [int]$DepthHeight = 480,
+    [int]$DepthFps = 30,
+    [bool]$AlignDepth = $true,
     [bool]$WarmupRosGraph = $true,
     [switch]$UseRealsenseWatchdog = $true,
     [switch]$StartArm = $true,
@@ -85,6 +92,8 @@ function Test-PythonModule {
 $realsenseCmd = ""
 $realsenseMode = ""
 $realsenseLaunchCmd = ""
+$alignDepthValue = $AlignDepth.ToString().ToLower()
+$alignDepthToken = if ($AlignDepth) { '$true' } else { '$false' }
 
 $armCmd = ""
 if ($ArmParamFile) {
@@ -104,9 +113,9 @@ if ($StartRealsense) {
             "ros2 run realsense2_camera realsense2_camera_node --ros-args",
             "-p enable_color:=true",
             "-p enable_depth:=true",
-            "-p align_depth.enable:=true",
-            "-p rgb_camera.profile:=640x480x15",
-            "-p depth_module.profile:=640x480x15"
+            "-p align_depth.enable:=$alignDepthValue",
+            "-p rgb_camera.profile:=${ColorWidth}x${ColorHeight}x${ColorFps}",
+            "-p depth_module.profile:=${DepthWidth}x${DepthHeight}x${DepthFps}"
         )
         if ($RealsenseSerial) {
             $realsenseArgs += "-p serial_no:=$RealsenseSerial"
@@ -124,13 +133,18 @@ if ($StartRealsense) {
             "ros2 run tactile_vision realsense_camera_node --ros-args",
             "-p enable_color:=true",
             "-p enable_depth:=true",
-            "-p align_depth.enable:=true",
-            "-p color_width:=640",
-            "-p color_height:=480",
-            "-p color_fps:=15",
-            "-p depth_width:=640",
-            "-p depth_height:=480",
-            "-p depth_fps:=15"
+            "-p align_depth.enable:=$alignDepthValue",
+            "-p color_width:=$ColorWidth",
+            "-p color_height:=$ColorHeight",
+            "-p color_fps:=$ColorFps",
+            "-p depth_width:=$DepthWidth",
+            "-p depth_height:=$DepthHeight",
+            "-p depth_fps:=$DepthFps",
+            "-p frame_timeout_ms:=500",
+            "-p max_consecutive_timeouts:=20",
+            "-p restart_cooldown_sec:=2.0",
+            "-p capture_stale_sec:=3.0",
+            "-p publish_only_when_new_frame:=true"
         )
         if ($RealsenseSerial) {
             $realsenseArgs += "-p serial_no:=$RealsenseSerial"
@@ -162,6 +176,9 @@ if ($StartRealsense) {
         if ($RealsenseSerial) {
             $realsenseLaunchCmd += " -RealsenseSerial `"$RealsenseSerial`""
         }
+        $realsenseLaunchCmd += " -ColorWidth $ColorWidth -ColorHeight $ColorHeight -ColorFps $ColorFps"
+        $realsenseLaunchCmd += " -DepthWidth $DepthWidth -DepthHeight $DepthHeight -DepthFps $DepthFps"
+        $realsenseLaunchCmd += " -AlignDepth $alignDepthToken"
         if ($realsenseMode -eq "realsense2_camera") {
             $realsenseLaunchCmd += " -UseRealsense2Camera"
         }

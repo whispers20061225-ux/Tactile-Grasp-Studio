@@ -63,10 +63,16 @@ class _Ros2AcquisitionNode(Node):
         super().__init__("ros2_tactile_acquisition")
         self._owner = owner
 
-        sensor_qos = QoSProfile(
+        tactile_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=20,
+        )
+        # Vision path only needs newest frame; keep queue depth=1 to reduce backlog/latency.
+        vision_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
         )
         health_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -74,12 +80,12 @@ class _Ros2AcquisitionNode(Node):
             depth=10,
         )
 
-        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, sensor_qos)
+        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos)
         self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos)
         if vision_enabled:
-            self.create_subscription(Image, color_topic, self._on_color, sensor_qos)
-            self.create_subscription(Image, depth_topic, self._on_depth, sensor_qos)
-            self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, sensor_qos)
+            self.create_subscription(Image, color_topic, self._on_color, vision_qos)
+            self.create_subscription(Image, depth_topic, self._on_depth, vision_qos)
+            self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, vision_qos)
 
     def _on_tactile(self, msg: Any) -> None:
         self._owner.ingest_tactile(msg)

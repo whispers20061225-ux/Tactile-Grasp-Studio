@@ -62,6 +62,12 @@ cd $PROJECT_ROOT
   -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" `
   -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" `
   -DomainId 0 `
+  -ColorWidth 640 `
+  -ColorHeight 480 `
+  -ColorFps 30 `
+  -DepthWidth 640 `
+  -DepthHeight 480 `
+  -DepthFps 30 `
   -TopicTimeoutSec 20 `
   -HzSampleSec 10 `
   -MinColorHz 3.0 `
@@ -71,13 +77,14 @@ cd $PROJECT_ROOT
 Expected result:
 
 - script retries startup and validates topic/hz readiness
+- default RealSense profile is now `640x480 @ 30fps` for both color and depth
 - final line prints: `[READY] You can now start VM one-click debug script.`
 
 ## Optional: Run watchdog directly in foreground
 
 ```powershell
 cd $PROJECT_ROOT
-. .\deploy\windows\realsense_watchdog.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" -DomainId 0 -CheckIntervalSec 20 -HzSampleSec 8 -MinColorHz 3.0 -MinDepthHz 3.0
+. .\deploy\windows\realsense_watchdog.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" -DomainId 0 -ColorWidth 640 -ColorHeight 480 -ColorFps 30 -DepthWidth 640 -DepthHeight 480 -DepthFps 30 -CheckIntervalSec 20 -HzSampleSec 8 -MinColorHz 3.0 -MinDepthHz 3.0
 ```
 
 This is the recommended long-running mode during VM + UI debugging.

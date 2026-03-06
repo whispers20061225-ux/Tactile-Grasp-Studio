@@ -3,6 +3,13 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$RealsenseSerial = "",
+    [int]$ColorWidth = 640,
+    [int]$ColorHeight = 480,
+    [int]$ColorFps = 30,
+    [int]$DepthWidth = 640,
+    [int]$DepthHeight = 480,
+    [int]$DepthFps = 30,
+    [bool]$AlignDepth = $true,
     [bool]$WarmupRosGraph = $false,
     [int]$TopicTimeoutSec = 20,
     [int]$HzSampleSec = 10,
@@ -173,6 +180,13 @@ function Invoke-StartRealsenseOnly {
         [int]$RosDomainId,
         [string]$SerialNo,
         [bool]$WarmupGraph,
+        [int]$ColorWidth,
+        [int]$ColorHeight,
+        [int]$ColorFps,
+        [int]$DepthWidth,
+        [int]$DepthHeight,
+        [int]$DepthFps,
+        [bool]$AlignDepth,
         [bool]$UseWatchdog = $false,
         [int]$TimeoutSec
     )
@@ -185,6 +199,7 @@ function Invoke-StartRealsenseOnly {
     $quotedRosSetupPath = "'" + ($RosSetupPath -replace "'", "''") + "'"
     $warmupToken = if ($WarmupGraph) { '$true' } else { '$false' }
     $watchdogToken = if ($UseWatchdog) { '$true' } else { '$false' }
+    $alignDepthToken = if ($AlignDepth) { '$true' } else { '$false' }
     $launchCommand = "& { & $quotedScriptPath -RosSetup $quotedRosSetupPath -DomainId $RosDomainId -WarmupRosGraph $warmupToken -UseRealsenseWatchdog:$watchdogToken -Execute"
     if ($WorkspaceSetupPath) {
         $quotedWorkspaceSetupPath = "'" + ($WorkspaceSetupPath -replace "'", "''") + "'"
@@ -194,6 +209,9 @@ function Invoke-StartRealsenseOnly {
         $quotedSerialNo = "'" + ($SerialNo -replace "'", "''") + "'"
         $launchCommand += " -RealsenseSerial $quotedSerialNo"
     }
+    $launchCommand += " -ColorWidth $ColorWidth -ColorHeight $ColorHeight -ColorFps $ColorFps"
+    $launchCommand += " -DepthWidth $DepthWidth -DepthHeight $DepthHeight -DepthFps $DepthFps"
+    $launchCommand += " -AlignDepth $alignDepthToken"
     $launchCommand += " }"
     $argList = @(
         "-NoLogo",
@@ -331,6 +349,13 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
         -RosDomainId $DomainId `
         -SerialNo $RealsenseSerial `
         -WarmupGraph $WarmupRosGraph `
+        -ColorWidth $ColorWidth `
+        -ColorHeight $ColorHeight `
+        -ColorFps $ColorFps `
+        -DepthWidth $DepthWidth `
+        -DepthHeight $DepthHeight `
+        -DepthFps $DepthFps `
+        -AlignDepth $AlignDepth `
         -UseWatchdog $false `
         -TimeoutSec $LauncherTimeoutSec
     if (-not $launchResult.Success) {

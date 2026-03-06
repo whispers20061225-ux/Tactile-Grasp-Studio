@@ -28,6 +28,12 @@ cd $PROJECT_ROOT
   -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" `
   -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" `
   -DomainId 0 `
+  -ColorWidth 640 `
+  -ColorHeight 480 `
+  -ColorFps 30 `
+  -DepthWidth 640 `
+  -DepthHeight 480 `
+  -DepthFps 30 `
   -TopicTimeoutSec 20 `
   -HzSampleSec 10 `
   -MinColorHz 3.0 `
@@ -50,7 +56,7 @@ What it does:
 
 - validates Windows->VM RealSense link using `deploy/vm/test_realsense_stream.sh`
 - starts `split_vm_app.launch.py` in background
-- validates VM-side core nodes (`arm_control_node`, `demo_task_node`, `tactile_ui_subscriber`, `realsense_monitor_node`)
+- validates VM-side core nodes (`arm_control_node`, `demo_task_node`, `tactile_ui_subscriber`); relay/monitor nodes are optional by vision profile
 - validates tactile simulation stream when enabled (`/tactile/raw`)
 - validates arm chain when enabled (`/arm/state`, `/arm/*`, `/control/arm/*`)
 - starts `main_ros2.py --control-mode ros2`
@@ -60,7 +66,7 @@ Command (VM terminal):
 
 ```bash
 cd /home/zhuyiwei/programme/programme
-bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 true
+bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 true minimal
 ```
 
 Parameters:
@@ -81,13 +87,13 @@ Optional:
 - keep launch alive after UI exits:
 
 ```bash
-KEEP_LAUNCH=true bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312
+KEEP_LAUNCH=true bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 true minimal
 ```
 
 Skip arm guard (camera + tactile only):
 
 ```bash
-bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 false
+bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 false minimal
 ```
 
 ## Troubleshooting
