@@ -62,7 +62,12 @@ def colorize_depth_for_display(depth: Optional[np.ndarray]) -> Optional[np.ndarr
     if not np.any(valid):
         return np.zeros(arr.shape + (3,), dtype=np.uint8)
 
-    valid_values = arrf[valid]
+    sample_step = 4 if arrf.size >= (160 * 120) else 1
+    sample = arrf[::sample_step, ::sample_step]
+    sample_valid = valid[::sample_step, ::sample_step]
+    valid_values = sample[sample_valid]
+    if valid_values.size < 64:
+        valid_values = arrf[valid]
     near = float(np.percentile(valid_values, 5.0))
     far = float(np.percentile(valid_values, 95.0))
     if not np.isfinite(near):
@@ -322,6 +327,10 @@ class VisionViewer(QWidget):
             layout.setContentsMargins(0, 0, 0, 0)
             layout.addWidget(view)
             self.image_tabs.addTab(tab, label)
+        self.rgb_tab = self.image_tabs.widget(0)
+        self.depth_tab = self.image_tabs.widget(1)
+        self.detection_tab = self.image_tabs.widget(2)
+        self.pose_tab = self.image_tabs.widget(3)
         self.pointcloud_tab = QWidget()
         pointcloud_layout = QVBoxLayout(self.pointcloud_tab)
         self.pointcloud_figure = Figure(figsize=(5, 4))
@@ -752,6 +761,9 @@ class VisionViewer(QWidget):
         }
         self.detection_view.set_overlay_options(**options)
         self.pose_view.set_overlay_options(**options)
+
+    def is_depth_tab_active(self) -> bool:
+        return hasattr(self, "depth_tab") and self.depth_tab is not None and self.image_tabs.currentWidget() is self.depth_tab
 
     def _handle_tab_changed(self, index: int) -> None:
         if not hasattr(self, "pointcloud_tab") or self.pointcloud_tab is None:

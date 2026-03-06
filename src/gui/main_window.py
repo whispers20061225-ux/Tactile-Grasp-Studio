@@ -620,7 +620,8 @@ class MainWindow(QMainWindow):
         if image is not None:
             self.vision_viewer.update_image(image, "rgb")
         if depth_image is not None:
-            self._schedule_depth_visual_for_frame(frame)
+            if self._is_depth_view_active():
+                self._schedule_depth_visual_for_frame(frame)
         else:
             self._depth_visual_last_task_ts = 0.0
             self.vision_viewer.update_image(None, "depth")
@@ -744,6 +745,13 @@ class MainWindow(QMainWindow):
         }
         self._analysis_worker.submit(task)
 
+    def _is_depth_view_active(self) -> bool:
+        if not self.vision_viewer or not self.vision_tab:
+            return False
+        if self.tab_widget.currentWidget() is not self.vision_tab:
+            return False
+        return bool(getattr(self.vision_viewer, "is_depth_tab_active", lambda: False)())
+
     def _is_pointcloud_view_active(self) -> bool:
         if not self.vision_viewer or not self.vision_tab:
             return False
@@ -864,7 +872,7 @@ class MainWindow(QMainWindow):
             resolution=self._ros2_vision_resolution,
             fps=self._ros2_vision_render_fps,
             rx_fps=self._ros2_vision_rx_fps if self._ros2_vision_rx_fps > 0 else self._ros2_vision_fps,
-            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total,
+            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total + self._depth_visual_result_overwrite_total,
             last_frame_age_ms=self._ros2_vision_last_frame_age_ms,
             stall_count=self._ros2_vision_stall_count,
         )
@@ -881,21 +889,44 @@ class MainWindow(QMainWindow):
         since_render = now - self._ros2_vision_last_render_ts if self._ros2_vision_last_render_ts > 0 else 0.0
         if since_render < 0.6:
             return
+        depth_backlog = self._depth_visual_worker.get_backlog_size()
+        analysis_backlog = self._analysis_worker.get_backlog_size()
+        pointcloud_backlog = self._pointcloud_worker.get_backlog_size()
         reason = "gui_render_blocked"
         if self._ros2_vision_last_frame_age_ms is not None and float(self._ros2_vision_last_frame_age_ms) > 1500.0:
             reason = "upstream_no_frame"
-        elif self._depth_visual_worker.get_backlog_size() > 1:
+        elif depth_backlog > 1:
             reason = "depth_visual_backlog"
-        elif self._analysis_worker.get_backlog_size() > 1:
+        elif analysis_backlog > 1:
             reason = "analysis_backlog"
-        elif self._pointcloud_worker.get_backlog_size() > 1:
+        elif pointcloud_backlog > 1:
             reason = "pointcloud_backlog"
         if not self._ros2_vision_stall_active:
             self._ros2_vision_stall_active = True
             self._ros2_vision_stall_reason = reason
             self._ros2_vision_stall_started_at = now
             self._ros2_vision_stall_count += 1
-            self.logger.warning("Vision stall detected: reason=%s render_gap=%.3fs frame_age_ms=%s", reason, since_render, self._ros2_vision_last_frame_age_ms)
+            active_view = "unknown"
+            if self.vision_viewer and hasattr(self.vision_viewer, "image_tabs"):
+                try:
+                    active_view = str(self.vision_viewer.image_tabs.tabText(self.vision_viewer.image_tabs.currentIndex()))
+                except Exception:
+                    active_view = "unknown"
+            self.logger.warning(
+                "Vision stall detected: reason=%s render_gap=%.3fs frame_age_ms=%s rx_fps=%.2f render_fps=%.2f acq_drop=%d acq_overwrite=%d depth_overwrite=%d depth_backlog=%d analysis_backlog=%d pointcloud_backlog=%d active_view=%s",
+                reason,
+                since_render,
+                self._ros2_vision_last_frame_age_ms,
+                self._ros2_vision_rx_fps,
+                self._ros2_vision_render_fps,
+                self._ros2_vision_dropped_frames,
+                self._ros2_vision_queue_overwrite_total,
+                self._depth_visual_result_overwrite_total,
+                depth_backlog,
+                analysis_backlog,
+                pointcloud_backlog,
+                active_view,
+            )
 
     def _process_ros2_vision_stream(self) -> None:
         if not self._is_ros2_vision_mode():
