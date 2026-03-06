@@ -3,6 +3,11 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from serial.tools import list_ports
+except Exception:  # pragma: no cover - optional runtime helper
+    list_ports = None
+
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -157,6 +162,48 @@ class ArmDriverNode(Node):
     def connected(self) -> bool:
         return bool(self._arm and self._arm.is_connected())
 
+    def _candidate_arm_ports(self) -> List[str]:
+        candidates: List[str] = []
+        seen = set()
+
+        def add_candidate(port_value: str) -> None:
+            port_name = str(port_value or "").strip()
+            if not port_name or port_name in seen:
+                return
+            seen.add(port_name)
+            candidates.append(port_name)
+
+        add_candidate(self.arm_serial_port)
+        if list_ports is None:
+            return candidates
+
+        try:
+            for port in list_ports.comports():
+                device = str(getattr(port, "device", "") or "").strip()
+                description = str(getattr(port, "description", "") or "")
+                manufacturer = str(getattr(port, "manufacturer", "") or "")
+                hwid = str(getattr(port, "hwid", "") or "")
+                fingerprint = " ".join([device, description, manufacturer, hwid]).lower()
+                if any(token in fingerprint for token in ("stm32", "stmicro", "virtual com port", "vid:pid=0483:")):
+                    add_candidate(device)
+        except Exception as exc:
+            self.get_logger().warn(f"serial port auto-detect failed: {exc}")
+
+        return candidates
+
+    def _build_connection_cfg(self, serial_port: str) -> Dict[str, object]:
+        connection_cfg: Dict[str, object] = {
+            "serial_port": serial_port,
+            "baud_rate": self.arm_baudrate,
+            "timeout": self.arm_timeout,
+            "startup_delay": self.arm_startup_delay,
+        }
+        if self.joint_zero_offsets_deg:
+            connection_cfg["joint_zero_offsets_deg"] = list(self.joint_zero_offsets_deg)
+        if self.joint_limit_disabled_ids:
+            connection_cfg["joint_limit_disabled_ids"] = list(self.joint_limit_disabled_ids)
+        return connection_cfg
+
     def _enable_arm(self) -> tuple[bool, str]:
         if self.connected:
             return True, "arm already enabled"
@@ -170,31 +217,44 @@ class ArmDriverNode(Node):
             from arm_control.learm_interface import LearmInterface
             from config.demo_config import DemoConfig
 
-            cfg = DemoConfig()
-            connection_cfg = {
-                "serial_port": self.arm_serial_port,
-                "baud_rate": self.arm_baudrate,
-                "timeout": self.arm_timeout,
-                "startup_delay": self.arm_startup_delay,
-            }
-            if self.joint_zero_offsets_deg:
-                connection_cfg["joint_zero_offsets_deg"] = list(self.joint_zero_offsets_deg)
-            if self.joint_limit_disabled_ids:
-                connection_cfg["joint_limit_disabled_ids"] = list(
-                    self.joint_limit_disabled_ids
-                )
-            cfg.learm_arm = {
-                "CONNECTION": connection_cfg
-            }
-            arm = LearmInterface(cfg)
-            if not arm.connect():
-                self._last_error = f"arm connect failed on port={self.arm_serial_port}"
+            candidate_ports = self._candidate_arm_ports()
+            if not candidate_ports:
                 self._arm = None
+                self._last_error = (
+                    "arm connect failed: no candidate serial ports found; "
+                    f"configured arm_serial_port={self.arm_serial_port}"
+                )
                 return False, self._last_error
 
-            self._arm = arm
-            self._last_error = ""
-            return True, "arm enabled"
+            attempted_errors: List[str] = []
+            requested_port = str(self.arm_serial_port or "").strip()
+
+            for candidate_port in candidate_ports:
+                cfg = DemoConfig()
+                cfg.learm_arm = {
+                    "CONNECTION": self._build_connection_cfg(candidate_port)
+                }
+                arm = LearmInterface(cfg)
+                if arm.connect():
+                    self._arm = arm
+                    self.arm_serial_port = candidate_port
+                    self._last_error = ""
+                    if requested_port and candidate_port != requested_port:
+                        self.get_logger().warn(
+                            f"configured arm_serial_port={requested_port} failed; auto-selected {candidate_port}"
+                        )
+                    return True, f"arm enabled on port={candidate_port}"
+
+                error_detail = str(getattr(getattr(arm, "status", None), "error_msg", "") or "connect failed")
+                attempted_errors.append(f"{candidate_port}: {error_detail}")
+                try:
+                    arm.disconnect()
+                except Exception:
+                    pass
+
+            self._arm = None
+            self._last_error = "arm connect failed; tried " + "; ".join(attempted_errors)
+            return False, self._last_error
         except Exception as exc:
             self._arm = None
             self._last_error = str(exc)

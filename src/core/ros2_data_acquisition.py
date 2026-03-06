@@ -70,14 +70,12 @@ class _Ros2AcquisitionNode(Node):
             depth=20,
         )
         mode = str(vision_qos_mode or "auto").strip().lower()
-        if mode == "reliable":
-            vision_reliability = ReliabilityPolicy.RELIABLE
-        elif mode == "best_effort":
-            vision_reliability = ReliabilityPolicy.BEST_EFFORT
-        else:
-            # Raw Windows->VM stream benefits from reliable QoS; relay path keeps best-effort latency profile.
-            is_relay_topic = "/camera/relay/" in str(color_topic)
-            vision_reliability = ReliabilityPolicy.BEST_EFFORT if is_relay_topic else ReliabilityPolicy.RELIABLE
+        vision_reliability = self._resolve_vision_reliability(
+            mode=mode,
+            color_topic=color_topic,
+            depth_topic=depth_topic,
+            camera_info_topic=camera_info_topic,
+        )
         # Vision path only needs newest frame; keep queue depth=1 to reduce backlog/latency.
         vision_qos = QoSProfile(
             reliability=vision_reliability,
@@ -93,9 +91,80 @@ class _Ros2AcquisitionNode(Node):
         self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos)
         self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos)
         if vision_enabled:
+            self.get_logger().info(
+                "Vision QoS resolved: requested=%s effective=%s",
+                mode,
+                self._reliability_label(vision_reliability),
+            )
             self.create_subscription(Image, color_topic, self._on_color, vision_qos)
             self.create_subscription(Image, depth_topic, self._on_depth, vision_qos)
             self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, vision_qos)
+
+    def _resolve_vision_reliability(
+        self,
+        *,
+        mode: str,
+        color_topic: str,
+        depth_topic: str,
+        camera_info_topic: str,
+    ):
+        if mode == "reliable":
+            return ReliabilityPolicy.RELIABLE
+        if mode == "best_effort":
+            return ReliabilityPolicy.BEST_EFFORT
+
+        saw_reliable = False
+        for topic in (color_topic, depth_topic, camera_info_topic):
+            topic_infos = self._get_publishers_info(topic)
+            for info in topic_infos:
+                qos_profile = getattr(info, "qos_profile", None)
+                reliability = getattr(qos_profile, "reliability", None)
+                if self._reliability_matches(reliability, ReliabilityPolicy.BEST_EFFORT):
+                    return ReliabilityPolicy.BEST_EFFORT
+                if self._reliability_matches(reliability, ReliabilityPolicy.RELIABLE):
+                    saw_reliable = True
+
+        if saw_reliable:
+            return ReliabilityPolicy.RELIABLE
+
+        # Compatibility-first fallback when publisher QoS cannot be introspected yet.
+        return ReliabilityPolicy.BEST_EFFORT
+
+    def _get_publishers_info(self, topic: str):
+        try:
+            return list(self.get_publishers_info_by_topic(topic))
+        except TypeError:
+            try:
+                return list(self.get_publishers_info_by_topic(topic, False))
+            except Exception:
+                return []
+        except Exception:
+            return []
+
+    @staticmethod
+    def _reliability_matches(value, expected_policy) -> bool:
+        if value == expected_policy:
+            return True
+
+        raw_value = getattr(value, "value", value)
+        expected_raw = getattr(expected_policy, "value", expected_policy)
+        try:
+            if int(raw_value) == int(expected_raw):
+                return True
+        except Exception:
+            pass
+
+        value_name = str(getattr(value, "name", raw_value)).strip().lower()
+        expected_name = str(getattr(expected_policy, "name", expected_raw)).strip().lower()
+        return value_name == expected_name
+
+    @staticmethod
+    def _reliability_label(policy) -> str:
+        name = str(getattr(policy, "name", policy)).strip().lower()
+        if name:
+            return name
+        raw_value = getattr(policy, "value", policy)
+        return str(raw_value)
 
     def _on_tactile(self, msg: Any) -> None:
         self._owner.ingest_tactile(msg)

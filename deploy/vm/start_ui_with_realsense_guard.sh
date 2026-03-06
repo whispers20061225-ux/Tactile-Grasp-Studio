@@ -87,13 +87,6 @@ if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   VISION_CAMERA_INFO_TOPIC="/camera/relay/color/camera_info"
 fi
 
-if [[ "${VISION_QOS_MODE}" == "auto" ]]; then
-  if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
-    VISION_QOS_MODE="best_effort"
-  else
-    VISION_QOS_MODE="reliable"
-  fi
-fi
 
 wait_for_topic() {
   local topic="$1"
@@ -151,6 +144,55 @@ wait_for_service() {
     local services
     services="$(ros2 service list 2>/dev/null || true)"
     if echo "${services}" | grep -Fxq "${service}"; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+read_windows_arm_port_hint() {
+  local config_file="${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml"
+  if [[ ! -f "${config_file}" ]]; then
+    return 0
+  fi
+  grep -m1 'arm_serial_port:' "${config_file}" 2>/dev/null | sed -E 's/.*arm_serial_port:[[:space:]]*"?([^\"]+)"?$/\1/'
+}
+
+call_setbool_service() {
+  local service_name="$1"
+  local data_value="$2"
+  local timeout_sec="$3"
+  local output=""
+  local rc=1
+
+  set +e
+  output="$(timeout "${timeout_sec}s" ros2 service call "${service_name}" std_srvs/srv/SetBool "{data: ${data_value}}" 2>&1)"
+  rc=$?
+  set -e
+
+  echo "${output}"
+  if [[ ${rc} -ne 0 ]]; then
+    return 1
+  fi
+  if echo "${output}" | tr '[:upper:]' '[:lower:]' | grep -Eq 'success[[:space:]]*[:=][[:space:]]*true'; then
+    return 0
+  fi
+  return 1
+}
+
+wait_for_arm_connected_state() {
+  local timeout_sec="$1"
+  local elapsed=0
+  while (( elapsed < timeout_sec )); do
+    local state_output=""
+    local rc=1
+    set +e
+    state_output="$(timeout 3s ros2 topic echo /arm/state --once 2>/dev/null)"
+    rc=$?
+    set -e
+    if [[ ${rc} -eq 0 ]] && echo "${state_output}" | tr '[:upper:]' '[:lower:]' | grep -Eq 'connected[[:space:]]*:[[:space:]]*true|connected[[:space:]]*=[[:space:]]*true'; then
       return 0
     fi
     sleep 1
@@ -410,7 +452,7 @@ if is_true "${ARM_REQUIRED}"; then
   if ! wait_for_topic "/arm/state" "${ARM_TIMEOUT_SEC}"; then
     log_fail "topic /arm/state not available within ${ARM_TIMEOUT_SEC}s"
     log_fail "Windows side likely started camera only. Start arm driver on Windows:"
-    log_fail "C:\\Users\\whisp\\Desktop\\dayi\\programme\\deploy\\windows\\start_hw_nodes.ps1 -RosSetup <ros_setup> -DomainId ${DOMAIN_ID} -StartArm:\$true -StartRealsense:\$true -Execute"
+    log_fail "C:\Users\whisp\Desktop\dayi\programme\deploy\windows\start_hw_nodes.ps1 -RosSetup <ros_setup> -DomainId ${DOMAIN_ID} -StartArm:\$true -StartRealsense:\$true -Execute"
     exit 1
   fi
   for svc in "/arm/enable" "/arm/home" "/arm/move_joint" "/arm/move_joints" "/control/arm/enable" "/control/arm/move_joint"; do
@@ -420,7 +462,33 @@ if is_true "${ARM_REQUIRED}"; then
       exit 1
     fi
   done
-  log_ok "arm chain is healthy"
+
+  log_step "enabling STM32/arm bridge before launching UI"
+  arm_enable_output="$(call_setbool_service "/control/arm/enable" "true" "${ARM_TIMEOUT_SEC}" || true)"
+  if ! echo "${arm_enable_output}" | tr '[:upper:]' '[:lower:]' | grep -Eq 'success[[:space:]]*[:=][[:space:]]*true'; then
+    log_fail "failed to enable STM32/arm bridge via /control/arm/enable"
+    if [[ -n "${arm_enable_output}" ]]; then
+      echo "${arm_enable_output}" >&2
+    fi
+    arm_port_hint="$(read_windows_arm_port_hint || true)"
+    if [[ -n "${arm_port_hint}" ]]; then
+      log_fail "current Windows arm_serial_port config: ${arm_port_hint} (ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml)"
+    fi
+    exit 1
+  fi
+
+  if ! wait_for_arm_connected_state "${ARM_TIMEOUT_SEC}"; then
+    log_fail "/arm/state is online but connected=true was not observed within ${ARM_TIMEOUT_SEC}s"
+    arm_port_hint="$(read_windows_arm_port_hint || true)"
+    if [[ -n "${arm_port_hint}" ]]; then
+      log_fail "current Windows arm_serial_port config: ${arm_port_hint} (ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml)"
+    fi
+    echo "[DIAG] latest /arm/state sample:" >&2
+    timeout 3s ros2 topic echo /arm/state --once >&2 || true
+    exit 1
+  fi
+
+  log_ok "STM32/arm bridge is enabled and connected"
 else
   echo "[WARN] ARM_REQUIRED=false, skipping arm chain guard."
 fi
