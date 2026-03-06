@@ -220,8 +220,12 @@ class MainWindow(QMainWindow):
         self._pointcloud_refresh_requested = False
         self._tactile_plot_dirty = False
         self._force_plot_dirty = False
+        self._vector_plot_dirty = False
+        self._contact_map_dirty = False
         self._last_arm_state = None  # ??????????UI??
+        self._last_control_panel_device_state = None
         self._last_missing_log_time = 0.0  # ????????????
+        self._last_missing_signature = None
 
         self.init_ui()
         self.init_menu()
@@ -413,8 +417,6 @@ class MainWindow(QMainWindow):
         self.control_panel.request_shutdown.connect(self.request_shutdown)
         
         # 连接三维力数据信号
-        self.vector_data_updated.connect(self.vector_plot.update_data)
-        self.contact_data_updated.connect(self.vector_plot.update_contact_data)
 
     def _is_simulation_mode(self) -> bool:
         """判断是否处于模拟模式（用于降低UI负载）"""
@@ -1151,7 +1153,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _ensure_object_detector(self, cfg: Optional[Dict[str, Any]] = None) -> Optional[ObjectDetector]:
-        """?????????"""
+        """Ensure the detector is initialized."""
         cfg = dict(cfg or self._get_detection_config())
         if self.object_detector is None or self._detector_needs_reload(cfg):
             try:
@@ -1197,7 +1199,7 @@ class MainWindow(QMainWindow):
         return results
 
     def _ensure_material_recognizer(self, mat_cfg: Optional[Dict[str, Any]] = None) -> Optional[MaterialRecognizer]:
-        """?????????"""
+        """Ensure the material recognizer is initialized."""
         cfg = None if mat_cfg is None else dict(mat_cfg)
         if cfg is None:
             cfg = self._get_material_config()
@@ -1217,7 +1219,7 @@ class MainWindow(QMainWindow):
         return self.material_recognizer
 
     def _ensure_pose_estimator(self, pose_cfg: Optional[Dict[str, Any]] = None) -> Optional[PoseEstimator]:
-        """?????????"""
+        """Ensure the pose estimator is initialized."""
         cfg = None if pose_cfg is None else dict(pose_cfg)
         if cfg is None:
             cfg = self._get_pose_config()
@@ -2491,22 +2493,22 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self.time_label)
     
     def init_timers(self):
-        """??????"""
+        """Initialize UI timers."""
         self.time_timer = QTimer()
         self.time_timer.timeout.connect(self.update_time)
         self.time_timer.start(1000)
 
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status)
-        self.status_timer.start(500)
+        self.status_timer.start(1000)
 
         self.data_update_timer = QTimer()
         self.data_update_timer.timeout.connect(self.update_all_plots)
-        self.data_update_timer.start(60)
+        self.data_update_timer.start(100)
 
         self.vector_update_timer = QTimer()
         self.vector_update_timer.timeout.connect(self.update_vector_visualization)
-        self.vector_update_timer.start(300)
+        self.vector_update_timer.start(500)
 
         self.rate_timer = QTimer()
         self.rate_timer.timeout.connect(self.calculate_data_rate)
@@ -2514,7 +2516,7 @@ class MainWindow(QMainWindow):
 
         self.force_3d_timer = QTimer()
         self.force_3d_timer.timeout.connect(self.update_3d_force_status)
-        self.force_3d_timer.start(200)
+        self.force_3d_timer.start(1000)
 
         self.ros2_vision_timer = QTimer()
         self.ros2_vision_timer.timeout.connect(self._process_ros2_vision_stream)
@@ -2597,22 +2599,16 @@ class MainWindow(QMainWindow):
     
     @pyqtSlot(object)
     def handle_vector_data(self, vector_data):
-        """处理三维力向量数据"""
+        """Handle vector data."""
         self.force_vectors = vector_data
-        
-        # 发送信号更新矢量图
-        self.vector_data_updated.emit(vector_data)
-        
-    
+        self._vector_plot_dirty = True
+
     @pyqtSlot(object)
     def handle_contact_data(self, contact_data):
-        """处理接触数据"""
+        """Handle contact data."""
         self.contact_map = contact_data
-        
-        # 发送信号更新接触部件
-        self.contact_data_updated.emit(contact_data)
-        
-    
+        self._contact_map_dirty = True
+
     @pyqtSlot(str, dict)
     def update_system_status(self, status: str, info: dict):
         """
@@ -2720,19 +2716,23 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
     def update_vector_visualization(self):
-        """更新矢量可视化"""
+        """Update vector visualization."""
         try:
-            # 如果当前显示的是矢量图标签页，更新矢量图
             if (
-                hasattr(self, "vector_plot")
-                and self.vector_tab is not None
-                and self.tab_widget.currentWidget() is self.vector_tab
+                not hasattr(self, "vector_plot")
+                or self.vector_tab is None
+                or self.tab_widget.currentWidget() is not self.vector_tab
             ):
-                if self.force_vectors is not None and len(self.force_vectors) > 0:
-                    self.vector_plot.update_data(self.force_vectors)
+                return
+            if self._contact_map_dirty and self.contact_map is not None:
+                self.vector_plot.update_contact_data(self.contact_map)
+                self._contact_map_dirty = False
+            if self._vector_plot_dirty and self.force_vectors is not None and len(self.force_vectors) > 0:
+                self.vector_plot.update_data(self.force_vectors)
+                self._vector_plot_dirty = False
         except Exception as e:
-            print(f"更新矢量可视化时出错: {e}")
-    
+            print(f"Vector visualization update error: {e}")
+
     def update_3d_force_status(self):
         """更新三维力状态"""
         if self.force_vectors is not None:
@@ -2894,30 +2894,45 @@ class MainWindow(QMainWindow):
                 vision_connected = bool(self.camera_capture and getattr(self.camera_capture, "is_capturing", False))
                 vision_simulation = self._is_camera_simulation()
 
-            self.control_panel.update_device_status(
-                stm32={"connected": stm32_connected, "simulation": stm32_simulation},
-                tactile={"connected": tactile_connected, "simulation": tactile_simulation},
-                arm={"connected": arm_connected, "simulation": arm_simulation},
-                vision={"connected": vision_connected, "simulation": vision_simulation},
-            )
+            device_state = {
+                "stm32": {"connected": stm32_connected, "simulation": stm32_simulation},
+                "tactile": {"connected": tactile_connected, "simulation": tactile_simulation},
+                "arm": {"connected": arm_connected, "simulation": arm_simulation},
+                "vision": {"connected": vision_connected, "simulation": vision_simulation},
+            }
+            if device_state != self._last_control_panel_device_state:
+                self.control_panel.update_device_status(
+                    stm32=device_state["stm32"],
+                    tactile=device_state["tactile"],
+                    arm=device_state["arm"],
+                    vision=device_state["vision"],
+                )
+                self._last_control_panel_device_state = device_state
 
-            # 低频提示未连接设备，避免日志刷屏导致卡顿
+            # Throttle missing-hardware warnings to reduce UI churn
             now = time.time()
-            if now - self._last_missing_log_time >= 3.0:
+            if now - self._last_missing_log_time >= 15.0:
                 missing = []
                 if not stm32_connected:
-                    missing.append("STM32未连接")
+                    missing.append("STM32 disconnected")
                 if not vision_connected:
-                    missing.append("视觉未连接")
+                    missing.append("Vision disconnected")
                 if not tactile_connected:
-                    missing.append("触觉未连接")
+                    missing.append("Tactile disconnected")
                 if not arm_connected:
-                    missing.append("机械臂未连接")
-                if missing:
-                    self.logger.warning("硬件未连接状态: " + "，".join(missing))
-                self._last_missing_log_time = now
+                    missing.append("Arm disconnected")
+                missing_signature = tuple(missing)
+                if missing and (
+                    missing_signature != self._last_missing_signature
+                    or now - self._last_missing_log_time >= 30.0
+                ):
+                    self.logger.warning("Hardware disconnected: " + ", ".join(missing))
+                    self._last_missing_signature = missing_signature
+                    self._last_missing_log_time = now
+                elif not missing:
+                    self._last_missing_signature = None
+                    self._last_missing_log_time = now
 
-            # 更新按钮状态：演示/校准仍依赖 STM32 + 触觉
             hardware_ready = stm32_connected and tactile_connected
             all_connected = hardware_ready and arm_connected and vision_connected
             any_connected = stm32_connected or tactile_connected or arm_connected or vision_connected
@@ -3653,7 +3668,7 @@ class MainWindow(QMainWindow):
             self.logger.error(f"更新UI配置失败: {e}")
     
     def closeEvent(self, event):
-        """??????"""
+        """Handle window close."""
         reply = QMessageBox.question(
             self, "????",
             "?????????????",

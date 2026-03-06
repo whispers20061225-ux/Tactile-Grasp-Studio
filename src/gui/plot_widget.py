@@ -736,16 +736,7 @@ class TactilePlotWidget(PlotWidget):
             self.pending_update = True
             
             # 调试信息
-            if time.time() - getattr(self, '_last_debug_time', 0) > 2.0:
-                if has_3d_force:
-                    print(f"三维力数据 - 单元数: {self.num_taxels}")
-                    print(f"  Fx范围: {np.min(self.force_vectors[:,0]):.1f}-{np.max(self.force_vectors[:,0]):.1f}")
-                    print(f"  Fy范围: {np.min(self.force_vectors[:,1]):.1f}-{np.max(self.force_vectors[:,1]):.1f}")
-                    print(f"  Fz范围: {np.min(self.force_vectors[:,2]):.1f}-{np.max(self.force_vectors[:,2]):.1f}")
-                    print(f"  合力大小范围: {np.min(self.force_magnitudes):.1f}-{np.max(self.force_magnitudes):.1f}")
-                else:
-                    print(f"一维力数据 - 范围: {np.min(self.force_data):.1f}-{np.max(self.force_data):.1f}")
-                
+            if time.time() - getattr(self, "_last_debug_time", 0) > 2.0:
                 self._last_debug_time = time.time()
                 
         except Exception as e:
@@ -854,6 +845,8 @@ class TactilePlotWidget(PlotWidget):
                         x_min = self.frame_numbers[start_idx]
                         x_max = self.frame_numbers[end_idx-1] if end_idx > 0 else self.frame_numbers[start_idx]
                     
+                    if x_min == x_max:
+                        x_max = x_min + 1
                     self.ax3.set_xlim(x_min, x_max)
                     
                     # y轴范围 - 基于所有显示的数据
