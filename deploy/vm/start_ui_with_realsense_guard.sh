@@ -53,9 +53,16 @@ auto_build_vm_relay_packages() {
   local ws_dir="${PROJECT_ROOT}/ros2_ws"
   local src_dir="${ws_dir}/src/tactile_vision_cpp"
   local build_log="${LAUNCH_LOG_DIR}/vm_relay_build_$(date +%Y%m%d_%H%M%S).log"
+  local rc=1
 
   if [[ ! -d "${src_dir}" ]]; then
     log_fail "relay source package not found: ${src_dir}"
+    return 1
+  fi
+
+  if ! /usr/bin/python3 -c "import catkin_pkg" >/dev/null 2>&1; then
+    log_fail "system python is missing catkin_pkg; install VM build dependency first"
+    echo "[HINT] sudo apt update && sudo apt install -y python3-catkin-pkg-modules"
     return 1
   fi
 
@@ -65,10 +72,21 @@ auto_build_vm_relay_packages() {
 
   pushd "${ws_dir}" >/dev/null
   set +e
-  colcon build --symlink-install \
-    --packages-select tactile_interfaces tactile_vision tactile_vision_cpp tactile_bringup \
-    >"${build_log}" 2>&1
-  local rc=$?
+  (
+    unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER CONDA_EXE CONDA_PYTHON_EXE PYTHONHOME PYTHONPATH _CE_CONDA _CE_M
+    export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+    export AMENT_PYTHON_EXECUTABLE="/usr/bin/python3"
+    export COLCON_PYTHON_EXECUTABLE="/usr/bin/python3"
+    export Python3_EXECUTABLE="/usr/bin/python3"
+    export PYTHON_EXECUTABLE="/usr/bin/python3"
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
+    colcon build --symlink-install \
+      --packages-select tactile_interfaces tactile_vision tactile_vision_cpp tactile_bringup \
+      --allow-overriding tactile_interfaces tactile_vision tactile_vision_cpp tactile_bringup \
+      --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3
+  ) >"${build_log}" 2>&1
+  rc=$?
   set -e
   popd >/dev/null
 
