@@ -82,7 +82,7 @@ class VisionViewer(QWidget):
         self.show_pose_axes = True
         self.show_depth_map = True
         self.detection_confidence = 0.5
-        self.auto_detect_enabled = True
+        self.auto_detect_enabled = False
         self.pose_info = None
         
         # 显示缩放
@@ -345,7 +345,7 @@ class VisionViewer(QWidget):
         auto_group = QGroupBox("实时检测")
         auto_layout = QHBoxLayout(auto_group)
         self.auto_detect_checkbox = QCheckBox("启用实时检测")
-        self.auto_detect_checkbox.setChecked(True)
+        self.auto_detect_checkbox.setChecked(False)
         self.auto_detect_checkbox.stateChanged.connect(self.toggle_auto_detect)
         auto_layout.addWidget(self.auto_detect_checkbox)
         layout.addWidget(auto_group)

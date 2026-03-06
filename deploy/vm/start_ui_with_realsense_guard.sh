@@ -11,17 +11,24 @@ CONDA_ENV="${7:-dayiprogramme312}"
 ARM_TIMEOUT_SEC="${8:-20}"
 MIN_TACTILE_HZ="${9:-3.0}"
 ARM_REQUIRED="${10:-true}"
+VISION_PROFILE_RAW="${11:-minimal}"
 KEEP_LAUNCH="${KEEP_LAUNCH:-false}"
+VISION_UI_MAX_FPS="${VISION_UI_MAX_FPS:-12.0}"
+VISION_UI_STALE_TIMEOUT_SEC="${VISION_UI_STALE_TIMEOUT_SEC:-3.0}"
+USE_LATEST_FRAME_RELAY_ENV="${USE_LATEST_FRAME_RELAY:-}"
+START_REALSENSE_MONITOR_ENV="${START_REALSENSE_MONITOR:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LAUNCH_LOG_DIR="${PROJECT_ROOT}/ros2_ws/log"
 LAUNCH_LOG_FILE="${LAUNCH_LOG_DIR}/split_vm_app_$(date +%Y%m%d_%H%M%S).log"
 
-USE_RELAY_TOPICS="true"
-VISION_COLOR_TOPIC="/camera/relay/color/image_raw"
-VISION_DEPTH_TOPIC="/camera/relay/aligned_depth_to_color/image_raw"
-VISION_CAMERA_INFO_TOPIC="/camera/relay/color/camera_info"
+VISION_PROFILE="${VISION_PROFILE_RAW,,}"
+USE_RELAY_TOPICS="false"
+ENABLE_REALSENSE_MONITOR="false"
+VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
+VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
+VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
 PARAM_FILE_PATH=""
 
 log_step() { echo "[STEP] $*"; }
@@ -37,6 +44,47 @@ has_ros_package() {
   set -e
   return ${rc}
 }
+
+case "${VISION_PROFILE}" in
+  minimal|lite|raw)
+    VISION_PROFILE="minimal"
+    USE_RELAY_TOPICS="false"
+    ENABLE_REALSENSE_MONITOR="false"
+    ;;
+  relay|full)
+    VISION_PROFILE="relay"
+    USE_RELAY_TOPICS="true"
+    ENABLE_REALSENSE_MONITOR="true"
+    ;;
+  *)
+    echo "[WARN] unknown vision profile '${VISION_PROFILE_RAW}', fallback to minimal"
+    VISION_PROFILE="minimal"
+    USE_RELAY_TOPICS="false"
+    ENABLE_REALSENSE_MONITOR="false"
+    ;;
+esac
+
+if [[ -n "${USE_LATEST_FRAME_RELAY_ENV}" ]]; then
+  if is_true "${USE_LATEST_FRAME_RELAY_ENV}"; then
+    USE_RELAY_TOPICS="true"
+  else
+    USE_RELAY_TOPICS="false"
+  fi
+fi
+
+if [[ -n "${START_REALSENSE_MONITOR_ENV}" ]]; then
+  if is_true "${START_REALSENSE_MONITOR_ENV}"; then
+    ENABLE_REALSENSE_MONITOR="true"
+  else
+    ENABLE_REALSENSE_MONITOR="false"
+  fi
+fi
+
+if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+  VISION_COLOR_TOPIC="/camera/relay/color/image_raw"
+  VISION_DEPTH_TOPIC="/camera/relay/aligned_depth_to_color/image_raw"
+  VISION_CAMERA_INFO_TOPIC="/camera/relay/color/camera_info"
+fi
 
 wait_for_topic() {
   local topic="$1"
@@ -199,29 +247,50 @@ source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 ros2 daemon stop >/dev/null 2>&1 || true
 ros2 daemon start >/dev/null 2>&1 || true
 
-if ! has_ros_package "tactile_vision_cpp"; then
+if [[ "${USE_RELAY_TOPICS}" == "true" ]] && ! has_ros_package "tactile_vision_cpp"; then
   USE_RELAY_TOPICS="false"
+  ENABLE_REALSENSE_MONITOR="false"
+  VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
+  VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
+  VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
+  echo "[WARN] package tactile_vision_cpp not found on VM; disabling latest_frame_relay_node and monitor."
+fi
+
+if [[ "${USE_RELAY_TOPICS}" == "false" ]]; then
   VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
   VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
   VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
 
-  PARAM_FILE_PATH="$(mktemp)"
-  cp "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_vm_app.yaml" "${PARAM_FILE_PATH}"
-  sed -i \
-    -e "s#/camera/relay/color/image_raw#${VISION_COLOR_TOPIC}#g" \
-    -e "s#/camera/relay/aligned_depth_to_color/image_raw#${VISION_DEPTH_TOPIC}#g" \
-    -e "s#/camera/relay/color/camera_info#${VISION_CAMERA_INFO_TOPIC}#g" \
-    "${PARAM_FILE_PATH}"
-
-  echo "[WARN] package tactile_vision_cpp not found on VM; starting without latest_frame_relay_node."
-  echo "[WARN] fallback UI topics: color=${VISION_COLOR_TOPIC} depth=${VISION_DEPTH_TOPIC} info=${VISION_CAMERA_INFO_TOPIC}"
-else
-  log_ok "tactile_vision_cpp detected; using relay topics for UI path"
+  if [[ "${ENABLE_REALSENSE_MONITOR}" == "true" ]]; then
+    PARAM_FILE_PATH="$(mktemp)"
+    cp "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_vm_app.yaml" "${PARAM_FILE_PATH}"
+    sed -i \
+      -e "s#/camera/relay/color/image_raw#${VISION_COLOR_TOPIC}#g" \
+      -e "s#/camera/relay/aligned_depth_to_color/image_raw#${VISION_DEPTH_TOPIC}#g" \
+      -e "s#/camera/relay/color/camera_info#${VISION_CAMERA_INFO_TOPIC}#g" \
+      "${PARAM_FILE_PATH}"
+  fi
 fi
+
+if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+  log_ok "latest_frame_relay_node enabled"
+else
+  echo "[WARN] latest_frame_relay_node disabled; UI uses raw camera topics."
+fi
+
+if [[ "${ENABLE_REALSENSE_MONITOR}" == "true" ]]; then
+  log_ok "realsense_monitor_node enabled"
+else
+  echo "[WARN] realsense_monitor_node disabled to reduce ROS2 load."
+fi
+
+echo "[INFO] vision profile=${VISION_PROFILE} relay=${USE_RELAY_TOPICS} monitor=${ENABLE_REALSENSE_MONITOR}"
+echo "[INFO] UI vision limits: max_fps=${VISION_UI_MAX_FPS} stale_timeout_sec=${VISION_UI_STALE_TIMEOUT_SEC}"
 
 log_step "cleaning stale VM ROS2 processes"
 pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
 pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
+pkill -f "realsense_monitor_node" >/dev/null 2>&1 || true
 sleep 1
 
 mkdir -p "${LAUNCH_LOG_DIR}"
@@ -231,6 +300,11 @@ if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   launch_args+=("start_latest_frame_relay:=true")
 else
   launch_args+=("start_latest_frame_relay:=false")
+fi
+if [[ "${ENABLE_REALSENSE_MONITOR}" == "true" ]]; then
+  launch_args+=("start_realsense_monitor:=true")
+else
+  launch_args+=("start_realsense_monitor:=false")
 fi
 if [[ -n "${PARAM_FILE_PATH}" ]]; then
   launch_args+=("param_file:=${PARAM_FILE_PATH}")
@@ -247,9 +321,12 @@ log_ok "split_vm_app.launch.py running (pid=${LAUNCH_PID})"
 echo "[INFO] launch log: ${LAUNCH_LOG_FILE}"
 
 log_step "validating VM-side core nodes"
-core_nodes=("/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber" "/realsense_monitor_node")
+core_nodes=("/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber")
 if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   core_nodes+=("/latest_frame_relay_node")
+fi
+if [[ "${ENABLE_REALSENSE_MONITOR}" == "true" ]]; then
+  core_nodes+=("/realsense_monitor_node")
 fi
 for node in "${core_nodes[@]}"; do
   if ! wait_for_node "${node}" 15; then
@@ -359,5 +436,6 @@ python "${PROJECT_ROOT}/main_ros2.py" \
   --vision-color-topic "${VISION_COLOR_TOPIC}" \
   --vision-depth-topic "${VISION_DEPTH_TOPIC}" \
   --vision-camera-info-topic "${VISION_CAMERA_INFO_TOPIC}" \
-  --vision-max-fps 15.0 \
+  --vision-max-fps "${VISION_UI_MAX_FPS}" \
+  --vision-stale-timeout-sec "${VISION_UI_STALE_TIMEOUT_SEC}" \
   --log-level INFO

@@ -165,7 +165,7 @@ class MainWindow(QMainWindow):
         self.last_detection_bboxes: List[List[float]] = []
         self.last_detection_entries: List[Dict[str, Any]] = []
         self.last_detection_time = 0.0
-        self.auto_detect_enabled = True
+        self.auto_detect_enabled = False
         self.auto_detect_interval = 0.6  # 秒
         self.last_auto_detect_time = 0.0
         self.detect_in_progress = False
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
             self.vision_viewer.pointcloud_request.connect(self._handle_pointcloud_request)
             self.vision_viewer.pointcloud_save_request.connect(self._handle_pointcloud_save_request)
             # 初始状态与UI同步（默认勾选实时检测）
-            self._handle_auto_detect_toggle(True)
+            self._handle_auto_detect_toggle(False)
             vision_layout.addWidget(self.vision_viewer)
             self.tab_widget.addTab(self.vision_tab, "视觉显示")
 
@@ -624,7 +624,7 @@ class MainWindow(QMainWindow):
 
             # 多视角融合点云（可选），不影响检测主流程
             try:
-                if self._get_pointcloud_fusion_config() is not None:
+                if self._get_pointcloud_fusion_config() is not None and (self.pointcloud_auto_render or self.pointcloud_fusion_force_enabled):
                     self._update_pointcloud_fusion(frame)
                 self._refresh_pointcloud_viewer(frame)
             except Exception as e:
@@ -698,7 +698,7 @@ class MainWindow(QMainWindow):
                     self.detect_in_progress = False
 
         try:
-            if self._get_pointcloud_fusion_config() is not None:
+            if self._get_pointcloud_fusion_config() is not None and (self.pointcloud_auto_render or self.pointcloud_fusion_force_enabled):
                 self._update_pointcloud_fusion(frame)
             self._refresh_pointcloud_viewer(frame)
         except Exception as e:
