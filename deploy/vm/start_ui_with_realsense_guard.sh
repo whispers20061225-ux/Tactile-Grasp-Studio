@@ -66,7 +66,7 @@ auto_build_vm_relay_packages() {
   pushd "${ws_dir}" >/dev/null
   set +e
   colcon build --symlink-install \
-    --packages-select tactile_vision tactile_vision_cpp tactile_bringup \
+    --packages-select tactile_interfaces tactile_vision tactile_vision_cpp tactile_bringup \
     >"${build_log}" 2>&1
   local rc=$?
   set -e
@@ -74,6 +74,8 @@ auto_build_vm_relay_packages() {
 
   if [[ ${rc} -ne 0 ]]; then
     log_fail "failed to build VM relay packages. Check log: ${build_log}"
+    echo "[DIAG] tail of build log:"
+    tail -n 40 "${build_log}" || true
     return 1
   fi
 
