@@ -165,6 +165,12 @@ class VideoFrameWidget(QWidget):
         self._frame = rgb_array_to_qimage(image)
         self.update()
 
+    def set_qimage_frame(self, frame: Optional[QImage], placeholder: Optional[str] = None) -> None:
+        self._frame = None if frame is None else QImage(frame)
+        if placeholder:
+            self._placeholder = placeholder
+        self.update()
+
     def set_depth_frame(self, depth: Optional[np.ndarray]) -> None:
         self._frame = depth_array_to_qimage(depth)
         self.update()
@@ -288,6 +294,7 @@ class VisionViewer(QWidget):
         self.current_image: Optional[np.ndarray] = None
         self.original_image: Optional[np.ndarray] = None
         self.depth_image: Optional[np.ndarray] = None
+        self._latest_rgb_qimage: Optional[QImage] = None
         self.detection_results: List[Dict[str, Any]] = []
         self.pose_estimations: List[Dict[str, Any]] = []
         self.pointcloud_data: Optional[Dict[str, np.ndarray]] = None
@@ -564,10 +571,9 @@ class VisionViewer(QWidget):
     def update_image(self, image: Any, image_type: str = "rgb") -> None:
         if image_type == "rgb":
             self.current_image = image
-            self.original_image = None if image is None else np.array(image, copy=True)
-            self.rgb_view.set_rgb_frame(image)
-            self.detection_view.set_rgb_frame(image)
-            self.pose_view.set_rgb_frame(image)
+            self.original_image = image
+            self._latest_rgb_qimage = None if image is None else rgb_array_to_qimage(image)
+            self._refresh_rgb_views()
         elif image_type == "depth":
             self.depth_image = image
             if self.show_depth_map:
@@ -765,9 +771,26 @@ class VisionViewer(QWidget):
     def is_depth_tab_active(self) -> bool:
         return hasattr(self, "depth_tab") and self.depth_tab is not None and self.image_tabs.currentWidget() is self.depth_tab
 
+    def is_detection_tab_active(self) -> bool:
+        return hasattr(self, "detection_tab") and self.detection_tab is not None and self.image_tabs.currentWidget() is self.detection_tab
+
+    def is_pose_tab_active(self) -> bool:
+        return hasattr(self, "pose_tab") and self.pose_tab is not None and self.image_tabs.currentWidget() is self.pose_tab
+
+    def _refresh_rgb_views(self) -> None:
+        active_widget = self.image_tabs.currentWidget() if hasattr(self, "image_tabs") else None
+        placeholder = "Waiting for image"
+        if active_widget is self.rgb_tab:
+            self.rgb_view.set_qimage_frame(self._latest_rgb_qimage, placeholder)
+        if active_widget is self.detection_tab:
+            self.detection_view.set_qimage_frame(self._latest_rgb_qimage, placeholder)
+        if active_widget is self.pose_tab:
+            self.pose_view.set_qimage_frame(self._latest_rgb_qimage, placeholder)
+
     def _handle_tab_changed(self, index: int) -> None:
         if not hasattr(self, "pointcloud_tab") or self.pointcloud_tab is None:
             return
+        self._refresh_rgb_views()
         if self.image_tabs.widget(index) is self.pointcloud_tab:
             self.display_pointcloud()
 

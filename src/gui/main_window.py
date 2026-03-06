@@ -170,9 +170,11 @@ class MainWindow(QMainWindow):
         self.last_detection_entries: List[Dict[str, Any]] = []
         self.last_detection_time = 0.0
         self.auto_detect_enabled = False
-        self.auto_detect_interval = 0.6  # ?
+        self.auto_detect_interval = 1.2
         self.last_auto_detect_time = 0.0
         self.detect_in_progress = False
+        self._analysis_backoff_until_ts = 0.0
+        self._analysis_stall_backoff_sec = 4.0
         self.last_detection_error_time = 0.0
         self.detection_error_cooldown = 3.0  # ???????
         self._material_recognizer_cfg: Optional[Dict[str, Any]] = None
@@ -729,11 +731,17 @@ class MainWindow(QMainWindow):
         if frame is None or getattr(frame, "color_image", None) is None:
             return
         if reason == "auto":
-            if not self.auto_detect_enabled:
+            if not self._should_schedule_auto_analysis():
                 return
-            if time.time() - self.last_auto_detect_time < self.auto_detect_interval:
+            now = time.time()
+            if now < self._analysis_backoff_until_ts:
                 return
-            self.last_auto_detect_time = time.time()
+            if self._analysis_worker.is_busy():
+                return
+            auto_interval = self._get_auto_analysis_interval()
+            if now - self.last_auto_detect_time < auto_interval:
+                return
+            self.last_auto_detect_time = now
         task = {
             "frame_timestamp": float(getattr(frame, "timestamp", 0.0) or 0.0),
             "color_image": frame.color_image,
@@ -753,6 +761,36 @@ class MainWindow(QMainWindow):
         if self.tab_widget.currentWidget() is not self.vision_tab:
             return False
         return bool(getattr(self.vision_viewer, "is_depth_tab_active", lambda: False)())
+
+    def _is_detection_analysis_view_active(self) -> bool:
+        if not self.vision_viewer or not self.vision_tab:
+            return False
+        if self.tab_widget.currentWidget() is not self.vision_tab:
+            return False
+        return bool(
+            getattr(self.vision_viewer, "is_detection_tab_active", lambda: False)()
+            or getattr(self.vision_viewer, "is_pose_tab_active", lambda: False)()
+        )
+
+    def _should_schedule_auto_analysis(self) -> bool:
+        if not self.auto_detect_enabled:
+            return False
+        if self._is_detection_analysis_view_active():
+            return True
+        if self._is_pointcloud_view_active():
+            cfg = self._get_pointcloud_fusion_config() or {}
+            return bool(cfg.get("roi_use_detection", False))
+        return False
+
+    def _get_auto_analysis_interval(self) -> float:
+        interval = max(1.2, float(self.auto_detect_interval))
+        if self._ros2_vision_stall_active:
+            interval = max(interval, 2.0)
+        if self._ros2_vision_rx_fps > 0.0 and self._ros2_vision_rx_fps < 12.0:
+            interval = max(interval, 2.0)
+        if self._ros2_vision_render_fps > 0.0 and self._ros2_vision_render_fps < 12.0:
+            interval = max(interval, 2.0)
+        return interval
 
     def _is_pointcloud_view_active(self) -> bool:
         if not self.vision_viewer or not self.vision_tab:
@@ -908,6 +946,11 @@ class MainWindow(QMainWindow):
             self._ros2_vision_stall_reason = reason
             self._ros2_vision_stall_started_at = now
             self._ros2_vision_stall_count += 1
+            if reason in ("gui_render_blocked", "upstream_no_frame"):
+                self._analysis_backoff_until_ts = max(
+                    self._analysis_backoff_until_ts,
+                    now + self._analysis_stall_backoff_sec,
+                )
             active_view = "unknown"
             if self.vision_viewer and hasattr(self.vision_viewer, "image_tabs"):
                 try:
@@ -915,7 +958,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     active_view = "unknown"
             self.logger.warning(
-                "Vision stall detected: reason=%s render_gap=%.3fs frame_age_ms=%s rx_fps=%.2f render_fps=%.2f acq_drop=%d acq_overwrite=%d depth_overwrite=%d depth_backlog=%d analysis_backlog=%d pointcloud_backlog=%d active_view=%s",
+                "Vision stall detected: reason=%s render_gap=%.3fs frame_age_ms=%s rx_fps=%.2f render_fps=%.2f acq_drop=%d acq_overwrite=%d depth_overwrite=%d depth_backlog=%d analysis_backlog=%d pointcloud_backlog=%d analysis_busy=%s auto_detect=%s active_view=%s",
                 reason,
                 since_render,
                 self._ros2_vision_last_frame_age_ms,
@@ -927,6 +970,8 @@ class MainWindow(QMainWindow):
                 depth_backlog,
                 analysis_backlog,
                 pointcloud_backlog,
+                self._analysis_worker.is_busy(),
+                self.auto_detect_enabled,
                 active_view,
             )
 
@@ -1538,7 +1583,10 @@ class MainWindow(QMainWindow):
         """????????"""
         self.auto_detect_enabled = enabled
         self.detect_in_progress = False
-        if enabled and self._ros2_vision_latest_frame is not None:
+        if not enabled:
+            return
+        self._analysis_backoff_until_ts = 0.0
+        if self._ros2_vision_latest_frame is not None and self._should_schedule_auto_analysis():
             self._schedule_analysis_for_frame(self._ros2_vision_latest_frame, reason="manual", show_error=False)
     def _handle_save_image_request(self, filename: str):
         """处理保存图像请求"""
