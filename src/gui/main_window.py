@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
         self._ros2_vision_stall_reason = ""
         self._ros2_vision_stall_started_at = 0.0
         self._ros2_vision_last_upstream_frame_wall_ts = 0.0
+        self._vision_depth_profile = None
         self._analysis_worker = LatestTaskWorker("vision-analysis", self._run_analysis_task)
         self._depth_visual_worker = LatestTaskWorker("depth-visual", self._run_depth_visual_task)
         self._pointcloud_worker = LatestTaskWorker("pointcloud", self._run_pointcloud_task)
@@ -546,6 +547,7 @@ class MainWindow(QMainWindow):
             self._depth_visual_last_task_ts = 0.0
             self._depth_visual_result_overwrite_total = 0
             self._manual_detection_requested = False
+            self._vision_depth_profile = None
             with self._ros2_vision_pending_lock:
                 self._ros2_vision_pending_frame = None
                 self._ros2_vision_frame_overwrite_count = 0
@@ -799,6 +801,31 @@ class MainWindow(QMainWindow):
             return False
         return self.vision_viewer.image_tabs.currentWidget() is self.vision_viewer.pointcloud_tab
 
+    def _get_desired_vision_depth_profile(self) -> str:
+        if self._pointcloud_refresh_requested or self._is_pointcloud_view_active():
+            return "pointcloud"
+        if self._is_depth_view_active():
+            return "depth"
+        if self._manual_detection_requested:
+            return "analysis"
+        if self.auto_detect_enabled and self._is_detection_analysis_view_active():
+            return "analysis"
+        return "off"
+
+    def _sync_vision_depth_profile(self) -> None:
+        if not self._is_ros2_vision_mode():
+            return
+        if self.data_acquisition_thread is None or not hasattr(self.data_acquisition_thread, "set_vision_depth_profile"):
+            return
+        desired_profile = self._get_desired_vision_depth_profile()
+        if desired_profile == self._vision_depth_profile:
+            return
+        self._vision_depth_profile = desired_profile
+        try:
+            self.data_acquisition_thread.set_vision_depth_profile(desired_profile)
+        except Exception:
+            pass
+
     def _schedule_pointcloud_for_frame(self, frame, *, force: bool) -> None:
         if frame is None or getattr(frame, "depth_image", None) is None:
             return
@@ -859,6 +886,7 @@ class MainWindow(QMainWindow):
         self.last_detection_entries = list(result.get("detection_entries", []))
         self.last_detection_time = float(result.get("detection_time", 0.0) or 0.0)
         self._manual_detection_requested = False
+        self._sync_vision_depth_profile()
         if self.vision_viewer:
             self.vision_viewer.update_image(result.get("detection_results", []), "detection")
             self.vision_viewer.update_image(result.get("pose_results", []), "pose")
@@ -979,6 +1007,7 @@ class MainWindow(QMainWindow):
         if not self._is_ros2_vision_mode():
             return
 
+        self._sync_vision_depth_profile()
         pulled = self._pull_ros2_vision_frame()
         if pulled is not None:
             self._queue_ros2_vision_frame(pulled)
@@ -1575,6 +1604,7 @@ class MainWindow(QMainWindow):
             if image is None:
                 raise RuntimeError("?????")
             self._manual_detection_requested = True
+            self._sync_vision_depth_profile()
             self._push_camera_frame_to_viewer(frame)
             self._schedule_analysis_for_frame(frame, reason="manual", show_error=True)
         except Exception as e:
@@ -1583,6 +1613,7 @@ class MainWindow(QMainWindow):
         """????????"""
         self.auto_detect_enabled = enabled
         self.detect_in_progress = False
+        self._sync_vision_depth_profile()
         if not enabled:
             return
         self._analysis_backoff_until_ts = 0.0
@@ -1639,6 +1670,7 @@ class MainWindow(QMainWindow):
             self.pointcloud_auto_render = True
             self.pointcloud_fusion_force_enabled = True
             self._pointcloud_refresh_requested = True
+            self._sync_vision_depth_profile()
             cfg = self._get_pointcloud_fusion_config() or {}
             if cfg.get("roi_use_detection", False):
                 max_age = float(cfg.get("roi_max_age", 0.5))

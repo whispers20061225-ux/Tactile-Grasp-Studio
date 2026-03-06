@@ -263,6 +263,9 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_intrinsics: Dict[str, float] = {}
         self._vision_device_info = "ROS2 camera stream"
         self._vision_resolution = "N/A"
+        self._vision_depth_profile = "off"
+        self._vision_depth_target_fps = 0.0
+        self._vision_last_depth_decode_ts = 0.0
         self._vision_color_count = 0
         self._vision_prev_color_count = 0
         self._vision_prev_status_ts = 0.0
@@ -488,6 +491,10 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_dropped_frames = 0
             self._vision_queue_overwrite_count = 0
             self._vision_resolution = "N/A"
+            self._vision_depth_profile = "off"
+            self._vision_depth_target_fps = 0.0
+            self._vision_last_depth_decode_ts = 0.0
+            self._vision_last_depth_ts = 0.0
         self.vision_status.emit(
             {
                 "connected": False,
@@ -505,6 +512,27 @@ class Ros2DataAcquisitionThread(QThread):
                 "device_info": self._vision_device_info,
             }
         )
+
+    def set_vision_depth_profile(self, profile: str) -> None:
+        profile_key = str(profile or "off").strip().lower()
+        depth_fps_map = {
+            "off": 0.0,
+            "analysis": 8.0,
+            "depth": 12.0,
+            "pointcloud": 8.0,
+        }
+        if profile_key not in depth_fps_map:
+            profile_key = "off"
+        with self._vision_lock:
+            if self._vision_depth_profile == profile_key:
+                return
+            self._vision_depth_profile = profile_key
+            self._vision_depth_target_fps = depth_fps_map[profile_key]
+            self._vision_last_depth_decode_ts = 0.0
+            if self._vision_depth_target_fps <= 0.0:
+                self._vision_latest_depth = None
+                self._vision_last_depth_ts = 0.0
+        self.logger.info("ROS2 vision depth profile: %s (target_fps=%.1f)", profile_key, depth_fps_map[profile_key])
 
     def ingest_vision_color(self, msg: Any) -> None:
         if not self.vision_enabled:
@@ -553,6 +581,16 @@ class Ros2DataAcquisitionThread(QThread):
             return
         try:
             now = time.time()
+            with self._vision_lock:
+                if not self._vision_stream_requested:
+                    return
+                target_fps = float(self._vision_depth_target_fps)
+                last_decode_ts = float(self._vision_last_depth_decode_ts)
+            if target_fps <= 0.0:
+                return
+            min_interval = 1.0 / target_fps if target_fps > 0.0 else 0.0
+            if min_interval > 0.0 and last_decode_ts > 0.0 and (now - last_decode_ts) < min_interval:
+                return
             depth = self._decode_image_message(msg)
             if depth is None:
                 return
@@ -563,6 +601,7 @@ class Ros2DataAcquisitionThread(QThread):
                     return
                 self._vision_latest_depth = depth
                 self._vision_last_depth_ts = now
+                self._vision_last_depth_decode_ts = now
             self._emit_vision_status(now=now, force=False)
         except Exception as exc:
             self.error_count += 1
