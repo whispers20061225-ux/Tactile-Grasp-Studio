@@ -256,6 +256,8 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_prev_color_count = 0
         self._vision_prev_status_ts = 0.0
         self._vision_fps = 0.0
+        self._vision_dropped_frames = 0
+        self._vision_queue_overwrite_count = 0
         self._vision_latest_frame: Optional[Ros2CameraFrame] = None
         self._vision_latest_frame_seq = 0
         self._vision_consumed_frame_seq = 0
@@ -452,6 +454,8 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_stream_requested = True
             self._vision_connected = False
             self._vision_status_emit_ts = 0.0
+            self._vision_dropped_frames = 0
+            self._vision_queue_overwrite_count = 0
         self._emit_vision_status(now=time.time(), force=True, message="Waiting for ROS2 camera frames...")
 
     def request_vision_disconnect(self) -> None:
@@ -462,12 +466,20 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_latest_depth = None
             self._vision_latest_frame = None
             self._vision_fps = 0.0
+            self._vision_dropped_frames = 0
+            self._vision_queue_overwrite_count = 0
             self._vision_resolution = "N/A"
         self.vision_status.emit(
             {
                 "connected": False,
                 "streaming": False,
                 "fps": 0.0,
+                "rx_fps": 0.0,
+                "render_fps": 0.0,
+                "dropped_frames": 0,
+                "queue_overwrite_count": 0,
+                "last_frame_age_ms": None,
+                "stall_count": 0,
                 "resolution": "N/A",
                 "message": "ROS2 vision stream disconnected",
                 "simulation": False,
@@ -497,6 +509,8 @@ class Ros2DataAcquisitionThread(QThread):
                 self._vision_resolution = f"{w}x{h}"
                 if (now - self._vision_last_emit_ts) >= (1.0 / self.vision_max_fps):
                     self._vision_last_emit_ts = now
+                    if self._vision_latest_frame is not None and self._vision_latest_frame_seq != self._vision_consumed_frame_seq:
+                        self._vision_queue_overwrite_count += 1
                     emit_frame = Ros2CameraFrame(
                         timestamp=frame_ts if frame_ts > 0 else now,
                         color_image=self._vision_latest_color,
@@ -506,6 +520,8 @@ class Ros2DataAcquisitionThread(QThread):
                     self._vision_latest_frame = emit_frame
                     self._vision_latest_frame_seq += 1
                     self._vision_connected = True
+                else:
+                    self._vision_dropped_frames += 1
             if emit_frame is not None and self.vision_emit_signal:
                 self.vision_frame.emit(emit_frame)
             self._emit_vision_status(now=now, force=False)
@@ -689,12 +705,21 @@ class Ros2DataAcquisitionThread(QThread):
                 self._vision_last_depth_ts > 0.0
                 and (now - self._vision_last_depth_ts) <= self.vision_stale_timeout_sec
             )
+            last_frame_age_ms = None
+            if self._vision_last_color_ts > 0.0:
+                last_frame_age_ms = max(0.0, (now - self._vision_last_color_ts) * 1000.0)
 
             status = {
                 "connected": connected,
                 "streaming": connected,
                 "simulation": False,
                 "fps": float(self._vision_fps),
+                "rx_fps": float(self._vision_fps),
+                "render_fps": 0.0,
+                "dropped_frames": int(self._vision_dropped_frames),
+                "queue_overwrite_count": int(self._vision_queue_overwrite_count),
+                "last_frame_age_ms": last_frame_age_ms,
+                "stall_count": 0,
                 "resolution": self._vision_resolution,
                 "color_topic": self.color_topic,
                 "depth_topic": self.depth_topic,
@@ -753,6 +778,10 @@ class Ros2DataAcquisitionThread(QThread):
                 "enabled": self.vision_enabled,
                 "connected": self._vision_connected,
                 "fps": self._vision_fps,
+                "rx_fps": self._vision_fps,
+                "render_fps": 0.0,
+                "dropped_frames": self._vision_dropped_frames,
+                "queue_overwrite_count": self._vision_queue_overwrite_count,
                 "resolution": self._vision_resolution,
             },
         }

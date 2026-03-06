@@ -12,6 +12,7 @@ import numpy as np
 import math
 from threading import Lock
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, Any, Optional, List, Tuple
 import cv2
 
@@ -50,6 +51,7 @@ from perception.vision.pointcloud_fusion import MultiViewPointCloudFusion
 from core.demo_manager import DemoManager
 from core.data_acquisition import DataAcquisitionThread
 from core.control_thread import ControlThread
+from core.latest_task_worker import LatestTaskWorker
 
 # GUI模块内部导入（使用绝对导入，方便独立运行）
 from gui.control_panel import ControlPanel
@@ -58,7 +60,7 @@ from gui.plot_widget import (
     ForcePlotWidget,
     TactileSurfaceWidget,  # 新增：触觉曲面显示
 )
-from gui.vision_viewer import VisionViewer
+from gui.modern_vision_viewer import VisionViewer
 from gui.simulation_viewer import SimulationViewer
 from gui.arm_status_panel import ArmStatusPanel
 from gui.dialogs import (
@@ -166,32 +168,53 @@ class MainWindow(QMainWindow):
         self.last_detection_entries: List[Dict[str, Any]] = []
         self.last_detection_time = 0.0
         self.auto_detect_enabled = False
-        self.auto_detect_interval = 0.6  # 秒
+        self.auto_detect_interval = 0.6  # ?
         self.last_auto_detect_time = 0.0
         self.detect_in_progress = False
         self.last_detection_error_time = 0.0
-        self.detection_error_cooldown = 3.0  # 秒内不重复提示
-        # ????????????mm????????????
+        self.detection_error_cooldown = 3.0  # ???????
+        self._material_recognizer_cfg: Optional[Dict[str, Any]] = None
+        self._pose_estimator_cfg: Optional[Dict[str, Any]] = None
         self.auto_grasp_max_depth_mm = 1200.0
         self.camera_device_info_text = None
         self._ros2_vision_connected = False
         self._ros2_vision_streaming = False
         self._ros2_vision_simulation = False
         self._ros2_vision_fps = 0.0
+        self._ros2_vision_rx_fps = 0.0
+        self._ros2_vision_render_fps = 0.0
+        self._ros2_vision_dropped_frames = 0
+        self._ros2_vision_last_frame_age_ms = None
         self._ros2_vision_resolution = "N/A"
         self._ros2_vision_latest_frame = None
         self._ros2_vision_device_info = "ROS2 camera stream"
         self._ros2_vision_pending_frame = None
         self._ros2_vision_pending_lock = Lock()
         self._ros2_vision_frame_overwrite_count = 0
+        self._ros2_vision_queue_overwrite_total = 0
         self._ros2_vision_last_self_check_ts = 0.0
         self._ros2_vision_last_diag_ts = 0.0
         self._ros2_vision_last_render_ts = 0.0
-        self._ros2_vision_render_interval_sec = 1.0 / 15.0
-        self._last_arm_state = None  # 缓存机械臂状态，便于UI刷新
-        self._last_missing_log_time = 0.0  # 硬件未连接告警节流时间戳
-        
-        # 初始化UI
+        self._ros2_vision_prev_render_ts = 0.0
+        self._ros2_vision_render_target_interval_sec = 1.0 / 30.0
+        self._ros2_vision_stall_count = 0
+        self._ros2_vision_stall_active = False
+        self._ros2_vision_stall_reason = ""
+        self._ros2_vision_stall_started_at = 0.0
+        self._ros2_vision_last_upstream_frame_wall_ts = 0.0
+        self._analysis_worker = LatestTaskWorker("vision-analysis", self._run_analysis_task)
+        self._pointcloud_worker = LatestTaskWorker("pointcloud", self._run_pointcloud_task)
+        self._analysis_result_overwrite_total = 0
+        self._pointcloud_result_overwrite_total = 0
+        self._pointcloud_schedule_interval_sec = 0.5
+        self._pointcloud_last_schedule_ts = 0.0
+        self._manual_detection_requested = False
+        self._pointcloud_refresh_requested = False
+        self._tactile_plot_dirty = False
+        self._force_plot_dirty = False
+        self._last_arm_state = None  # ??????????UI??
+        self._last_missing_log_time = 0.0  # ????????????
+
         self.init_ui()
         self.init_menu()
         self.init_toolbar()
@@ -203,11 +226,13 @@ class MainWindow(QMainWindow):
         # 连接信号
         self.connect_signals()
         
-        # 设置日志
+        # ????
         self.logger = logging.getLogger(__name__)
-        
-        self.logger.info("三维力主窗口初始化完成")
-    
+        self._analysis_worker.start()
+        self._pointcloud_worker.start()
+
+        self.logger.info("???????????")
+
     def init_ui(self):
         """初始化用户界面 - 支持三维力可视化"""
         # 创建中央部件
@@ -503,6 +528,14 @@ class MainWindow(QMainWindow):
             self._ros2_vision_connected = False
             self._ros2_vision_streaming = False
             self._ros2_vision_latest_frame = None
+            self._ros2_vision_fps = 0.0
+            self._ros2_vision_rx_fps = 0.0
+            self._ros2_vision_render_fps = 0.0
+            self._ros2_vision_dropped_frames = 0
+            self._ros2_vision_last_frame_age_ms = None
+            self._ros2_vision_queue_overwrite_total = 0
+            self._pointcloud_refresh_requested = False
+            self._manual_detection_requested = False
             with self._ros2_vision_pending_lock:
                 self._ros2_vision_pending_frame = None
                 self._ros2_vision_frame_overwrite_count = 0
@@ -572,63 +605,49 @@ class MainWindow(QMainWindow):
             pass
 
     def _push_camera_frame_to_viewer(self, frame):
-        """将相机帧发送到视觉显示部件"""
+        """?????????????"""
         if not self.vision_viewer or frame is None:
             return
-        image = frame.color_image
-        if image is None:
-            return
-        # VisionViewer 期望BGR，这里将CameraCapture的RGB转换回BGR
-        try:
-            display_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        except Exception:
-            display_image = image
 
-        self.vision_viewer.update_image(display_image, "rgb")
-        if getattr(frame, "depth_image", None) is not None:
-            self.vision_viewer.update_image(frame.depth_image, "depth")
-
-        # 同步状态显示
-        h, w = display_image.shape[:2]
-        config = self._get_camera_config()
-        if self._is_ros2_vision_mode():
-            fps_display = int(self._ros2_vision_fps) if self._ros2_vision_fps > 0 else (config.fps if config else 0)
+        image = getattr(frame, "color_image", None)
+        depth_image = getattr(frame, "depth_image", None)
+        if image is not None:
+            self.vision_viewer.update_image(image, "rgb")
+        if depth_image is not None:
+            self.vision_viewer.update_image(depth_image, "depth")
         else:
-            fps_display = int(self.camera_capture.fps) if self.camera_capture and self.camera_capture.fps else (config.fps if config else 0)
+            self.vision_viewer.update_image(None, "depth")
+
+        resolution = self._ros2_vision_resolution
+        if image is not None and hasattr(image, "shape") and len(image.shape) >= 2:
+            h, w = image.shape[:2]
+            resolution = f"{w}x{h}"
         self.vision_viewer.update_camera_status(
-            connected=True, streaming=True, resolution=f"{w}x{h}", fps=fps_display
+            connected=self._ros2_vision_connected or bool(image is not None),
+            streaming=self._ros2_vision_streaming or bool(image is not None),
+            resolution=resolution,
+            fps=self._ros2_vision_render_fps,
+            rx_fps=self._ros2_vision_rx_fps if self._ros2_vision_rx_fps > 0 else self._ros2_vision_fps,
+            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total,
+            last_frame_age_ms=self._ros2_vision_last_frame_age_ms,
+            stall_count=self._ros2_vision_stall_count,
         )
 
     def _update_camera_view(self):
-        """定时获取最新相机帧并更新UI"""
+        """????????????UI"""
         if self._is_ros2_vision_mode():
             return
         if not self.camera_capture or not self.camera_capture.is_capturing:
             return
         frame = self.camera_capture.get_latest_frame()
-        if frame:
-            self._push_camera_frame_to_viewer(frame)
-            # 实时检测（节流）
-            if self.auto_detect_enabled and not self.detect_in_progress:
-                now = time.time()
-                if now - self.last_auto_detect_time >= self.auto_detect_interval:
-                    self.detect_in_progress = True
-                    self.last_auto_detect_time = now
-                    try:
-                        # 将RealSense深度帧传给姿态估计器，便于提升位姿精度
-                        self._run_detection_on_image(frame.color_image, frame.depth_image, frame.intrinsics)
-                    except Exception as e:
-                        self.logger.debug(f"实时检测失败: {e}")
-                    finally:
-                        self.detect_in_progress = False
-
-            # 多视角融合点云（可选），不影响检测主流程
-            try:
-                if self._get_pointcloud_fusion_config() is not None and (self.pointcloud_auto_render or self.pointcloud_fusion_force_enabled):
-                    self._update_pointcloud_fusion(frame)
-                self._refresh_pointcloud_viewer(frame)
-            except Exception as e:
-                self.logger.debug(f"点云融合失败: {e}")
+        if frame is None:
+            return
+        now = time.time()
+        self._ros2_vision_connected = True
+        self._ros2_vision_streaming = True
+        self._render_vision_frame(frame, now)
+        self._schedule_analysis_for_frame(frame, reason="auto", show_error=False)
+        self._schedule_pointcloud_for_frame(frame, force=False)
 
     @pyqtSlot(object)
     def _handle_ros2_vision_frame(self, frame):
@@ -642,6 +661,7 @@ class MainWindow(QMainWindow):
         with self._ros2_vision_pending_lock:
             if self._ros2_vision_pending_frame is not None:
                 self._ros2_vision_frame_overwrite_count += 1
+                self._ros2_vision_queue_overwrite_total += 1
             self._ros2_vision_pending_frame = frame
 
     def _pull_ros2_vision_frame(self):
@@ -656,6 +676,185 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
+    def _render_vision_frame(self, frame, now: float) -> None:
+        self._ros2_vision_latest_frame = frame
+        self._ros2_vision_last_render_ts = now
+        frame_ts = float(getattr(frame, "timestamp", now) or now)
+        self._ros2_vision_last_frame_age_ms = max(0.0, (now - frame_ts) * 1000.0)
+        image = getattr(frame, "color_image", None)
+        if image is not None and hasattr(image, "shape") and len(image.shape) >= 2:
+            height, width = image.shape[:2]
+            self._ros2_vision_resolution = f"{width}x{height}"
+        if self._ros2_vision_prev_render_ts > 0.0:
+            elapsed = now - self._ros2_vision_prev_render_ts
+            if elapsed > 0.0:
+                instant_fps = 1.0 / elapsed
+                if self._ros2_vision_render_fps <= 0.0:
+                    self._ros2_vision_render_fps = instant_fps
+                else:
+                    self._ros2_vision_render_fps = self._ros2_vision_render_fps * 0.7 + instant_fps * 0.3
+        self._ros2_vision_prev_render_ts = now
+        if not self._is_ros2_vision_mode():
+            self._ros2_vision_fps = self._ros2_vision_render_fps
+            self._ros2_vision_rx_fps = self._ros2_vision_render_fps
+        self._push_camera_frame_to_viewer(frame)
+        self._update_vision_stall_state(now=now, frame_rendered=True)
+        self._update_vision_status_widgets()
+
+    def _schedule_analysis_for_frame(self, frame, *, reason: str, show_error: bool) -> None:
+        if frame is None or getattr(frame, "color_image", None) is None:
+            return
+        if reason == "auto":
+            if not self.auto_detect_enabled:
+                return
+            if time.time() - self.last_auto_detect_time < self.auto_detect_interval:
+                return
+            self.last_auto_detect_time = time.time()
+        task = {
+            "frame_timestamp": float(getattr(frame, "timestamp", 0.0) or 0.0),
+            "color_image": frame.color_image,
+            "depth_image": getattr(frame, "depth_image", None),
+            "intrinsics": dict(getattr(frame, "intrinsics", {}) or {}),
+            "detection_cfg": self._get_detection_config(),
+            "material_cfg": self._get_material_config(),
+            "pose_cfg": self._get_pose_config(),
+            "reason": reason,
+            "show_error": bool(show_error),
+        }
+        self._analysis_worker.submit(task)
+
+    def _is_pointcloud_view_active(self) -> bool:
+        if not self.vision_viewer or not self.vision_tab:
+            return False
+        if self.tab_widget.currentWidget() is not self.vision_tab:
+            return False
+        return self.vision_viewer.image_tabs.currentWidget() is self.vision_viewer.pointcloud_tab
+
+    def _schedule_pointcloud_for_frame(self, frame, *, force: bool) -> None:
+        if frame is None or getattr(frame, "depth_image", None) is None:
+            return
+        now = time.time()
+        pointcloud_active = self._is_pointcloud_view_active()
+        if not force and not pointcloud_active:
+            return
+        if not force and (now - self._pointcloud_last_schedule_ts) < self._pointcloud_schedule_interval_sec:
+            return
+        cfg = self._get_pointcloud_fusion_config() or {}
+        task = {
+            "frame_timestamp": float(getattr(frame, "timestamp", 0.0) or 0.0),
+            "color_image": getattr(frame, "color_image", None),
+            "depth_image": getattr(frame, "depth_image", None),
+            "intrinsics": dict(getattr(frame, "intrinsics", {}) or {}),
+            "cfg": dict(cfg),
+            "detection_entries": list(self.last_detection_entries or []),
+            "force": bool(force),
+        }
+        self._pointcloud_last_schedule_ts = now
+        self._pointcloud_worker.submit(task)
+
+    def _poll_vision_workers(self) -> None:
+        self._analysis_result_overwrite_total += self._analysis_worker.take_overwrite_count()
+        self._pointcloud_result_overwrite_total += self._pointcloud_worker.take_overwrite_count()
+
+        analysis_result = self._analysis_worker.take_result()
+        if analysis_result is not None:
+            self._apply_analysis_result(analysis_result.task, analysis_result.value, analysis_result.error)
+
+        pointcloud_result = self._pointcloud_worker.take_result()
+        if pointcloud_result is not None:
+            self._apply_pointcloud_result(pointcloud_result.task, pointcloud_result.value, pointcloud_result.error)
+
+        if self._is_pointcloud_view_active() and self._ros2_vision_latest_frame is not None:
+            self._schedule_pointcloud_for_frame(self._ros2_vision_latest_frame, force=False)
+
+        self._update_vision_status_widgets()
+        self._update_vision_stall_state(now=time.time(), frame_rendered=False)
+
+    def _apply_analysis_result(self, task: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
+        if error:
+            self.logger.warning("Vision analysis worker failed: %s", error)
+            if task.get("show_error"):
+                now = time.time()
+                if now - self.last_detection_error_time > self.detection_error_cooldown:
+                    self._show_camera_error(error)
+                    self.last_detection_error_time = now
+            return
+        if not result:
+            return
+        self.last_detection_bboxes = list(result.get("detection_bboxes", []))
+        self.last_detection_entries = list(result.get("detection_entries", []))
+        self.last_detection_time = float(result.get("detection_time", 0.0) or 0.0)
+        self._manual_detection_requested = False
+        if self.vision_viewer:
+            self.vision_viewer.update_image(result.get("detection_results", []), "detection")
+            self.vision_viewer.update_image(result.get("pose_results", []), "pose")
+        if self._pointcloud_refresh_requested and self._ros2_vision_latest_frame is not None:
+            self._schedule_pointcloud_for_frame(self._ros2_vision_latest_frame, force=True)
+
+    def _apply_pointcloud_result(self, task: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
+        if error:
+            self.logger.debug("Pointcloud worker failed: %s", error)
+            if task.get("force"):
+                self._show_camera_error(error)
+            return
+        if not self.vision_viewer:
+            return
+        pointcloud_data = None if not result else result.get("pointcloud_data")
+        if pointcloud_data:
+            self.pointcloud_auto_render = True
+            self._pointcloud_refresh_requested = False
+            self.vision_viewer.update_image(pointcloud_data, "pointcloud")
+            return
+        if task.get("force"):
+            self._show_camera_error("Point cloud is empty")
+
+    def _refresh_live_self_check_status(self) -> None:
+        if not self.vision_viewer:
+            return
+        frame = self._ros2_vision_latest_frame if self._is_ros2_vision_mode() else (self.camera_capture.get_latest_frame() if self.camera_capture else None)
+        if frame is not None:
+            self._refresh_self_check_status(frame)
+
+    def _update_vision_status_widgets(self) -> None:
+        if not self.vision_viewer:
+            return
+        self.vision_viewer.update_camera_status(
+            connected=self._ros2_vision_connected,
+            streaming=self._ros2_vision_streaming,
+            resolution=self._ros2_vision_resolution,
+            fps=self._ros2_vision_render_fps,
+            rx_fps=self._ros2_vision_rx_fps if self._ros2_vision_rx_fps > 0 else self._ros2_vision_fps,
+            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total,
+            last_frame_age_ms=self._ros2_vision_last_frame_age_ms,
+            stall_count=self._ros2_vision_stall_count,
+        )
+
+    def _update_vision_stall_state(self, *, now: float, frame_rendered: bool) -> None:
+        if frame_rendered:
+            if self._ros2_vision_stall_active:
+                self.logger.info("Vision stall recovered after %.3fs (%s)", now - self._ros2_vision_stall_started_at, self._ros2_vision_stall_reason)
+            self._ros2_vision_stall_active = False
+            self._ros2_vision_stall_reason = ""
+            return
+        if not self._ros2_vision_connected:
+            return
+        since_render = now - self._ros2_vision_last_render_ts if self._ros2_vision_last_render_ts > 0 else 0.0
+        if since_render < 0.6:
+            return
+        reason = "gui_render_blocked"
+        if self._ros2_vision_last_frame_age_ms is not None and float(self._ros2_vision_last_frame_age_ms) > 1500.0:
+            reason = "upstream_no_frame"
+        elif self._analysis_worker.get_backlog_size() > 1:
+            reason = "analysis_backlog"
+        elif self._pointcloud_worker.get_backlog_size() > 1:
+            reason = "pointcloud_backlog"
+        if not self._ros2_vision_stall_active:
+            self._ros2_vision_stall_active = True
+            self._ros2_vision_stall_reason = reason
+            self._ros2_vision_stall_started_at = now
+            self._ros2_vision_stall_count += 1
+            self.logger.warning("Vision stall detected: reason=%s render_gap=%.3fs frame_age_ms=%s", reason, since_render, self._ros2_vision_last_frame_age_ms)
+
     def _process_ros2_vision_stream(self) -> None:
         if not self._is_ros2_vision_mode():
             return
@@ -664,55 +863,22 @@ class MainWindow(QMainWindow):
         if pulled is not None:
             self._queue_ros2_vision_frame(pulled)
 
-        now = time.time()
-        if (now - self._ros2_vision_last_render_ts) < self._ros2_vision_render_interval_sec:
-            return
-
         frame = None
         with self._ros2_vision_pending_lock:
             if self._ros2_vision_pending_frame is not None:
                 frame = self._ros2_vision_pending_frame
                 self._ros2_vision_pending_frame = None
+
+        now = time.time()
         if frame is None:
+            self._update_vision_stall_state(now=now, frame_rendered=False)
             return
 
-        self._ros2_vision_last_render_ts = now
-        self._ros2_vision_latest_frame = frame
         self._ros2_vision_connected = True
         self._ros2_vision_streaming = True
-
-        self._push_camera_frame_to_viewer(frame)
-        if now - self._ros2_vision_last_self_check_ts >= 1.0:
-            self._refresh_self_check_status(frame)
-            self._ros2_vision_last_self_check_ts = now
-
-        if self.auto_detect_enabled and not self.detect_in_progress:
-            if now - self.last_auto_detect_time >= self.auto_detect_interval:
-                self.detect_in_progress = True
-                self.last_auto_detect_time = now
-                try:
-                    self._run_detection_on_image(frame.color_image, frame.depth_image, frame.intrinsics)
-                except Exception as e:
-                    self.logger.debug(f"ROS2实时检测失败: {e}")
-                finally:
-                    self.detect_in_progress = False
-
-        try:
-            if self._get_pointcloud_fusion_config() is not None and (self.pointcloud_auto_render or self.pointcloud_fusion_force_enabled):
-                self._update_pointcloud_fusion(frame)
-            self._refresh_pointcloud_viewer(frame)
-        except Exception as e:
-            self.logger.debug(f"ROS2点云融合失败: {e}")
-
-        if now - self._ros2_vision_last_diag_ts >= 5.0:
-            if self._ros2_vision_frame_overwrite_count > 0:
-                if hasattr(self, "logger"):
-                    self.logger.info(
-                        "ROS2 vision latest-frame overwrite count (5s): %d",
-                        self._ros2_vision_frame_overwrite_count,
-                    )
-                self._ros2_vision_frame_overwrite_count = 0
-            self._ros2_vision_last_diag_ts = now
+        self._render_vision_frame(frame, now)
+        self._schedule_analysis_for_frame(frame, reason="auto", show_error=False)
+        self._schedule_pointcloud_for_frame(frame, force=False)
 
     @pyqtSlot(dict)
     def _handle_ros2_vision_status(self, info: Dict[str, Any]):
@@ -722,19 +888,25 @@ class MainWindow(QMainWindow):
         self._ros2_vision_streaming = bool(info.get("streaming", self._ros2_vision_connected))
         self._ros2_vision_simulation = bool(info.get("simulation", False))
         self._ros2_vision_fps = float(info.get("fps", self._ros2_vision_fps or 0.0))
+        self._ros2_vision_rx_fps = float(info.get("rx_fps", self._ros2_vision_fps))
+        render_fps = info.get("render_fps", None)
+        if render_fps is not None:
+            try:
+                render_fps_value = float(render_fps)
+                if render_fps_value > 0.0:
+                    self._ros2_vision_render_fps = render_fps_value
+            except Exception:
+                pass
         self._ros2_vision_resolution = str(info.get("resolution", self._ros2_vision_resolution))
+        self._ros2_vision_dropped_frames = int(info.get("dropped_frames", self._ros2_vision_dropped_frames))
+        self._ros2_vision_queue_overwrite_total = int(info.get("queue_overwrite_count", self._ros2_vision_queue_overwrite_total))
+        self._ros2_vision_last_frame_age_ms = info.get("last_frame_age_ms", self._ros2_vision_last_frame_age_ms)
         device_info = str(info.get("device_info", "") or "").strip()
         if device_info:
             self._ros2_vision_device_info = device_info
-
-        if self.vision_viewer:
-            self.vision_viewer.update_camera_status(
-                connected=self._ros2_vision_connected,
-                streaming=self._ros2_vision_streaming,
-                resolution=self._ros2_vision_resolution,
-                fps=int(self._ros2_vision_fps),
-            )
-
+        if self._ros2_vision_last_frame_age_ms is not None:
+            self._ros2_vision_last_upstream_frame_wall_ts = time.time() - (float(self._ros2_vision_last_frame_age_ms) / 1000.0)
+        self._update_vision_status_widgets()
         self.control_panel.update_device_status(
             vision={
                 "connected": self._ros2_vision_connected,
@@ -805,14 +977,14 @@ class MainWindow(QMainWindow):
             return True
         return False
 
-    def _ensure_object_detector(self) -> Optional[ObjectDetector]:
-        """惰性创建物体检测器"""
-        cfg = self._get_detection_config()
+    def _ensure_object_detector(self, cfg: Optional[Dict[str, Any]] = None) -> Optional[ObjectDetector]:
+        """?????????"""
+        cfg = dict(cfg or self._get_detection_config())
         if self.object_detector is None or self._detector_needs_reload(cfg):
             try:
                 self.object_detector = ObjectDetector(cfg)
             except Exception as e:
-                self.logger.warning(f"加载检测模型失败，使用空检测: {e}")
+                self.logger.warning(f"??????????????: {e}")
                 self.object_detector = None
         elif self.object_detector is not None:
             self.object_detector.confidence_threshold = cfg.get("confidence_threshold", 0.5)
@@ -851,31 +1023,41 @@ class MainWindow(QMainWindow):
             })
         return results
 
-    def _ensure_material_recognizer(self) -> Optional[MaterialRecognizer]:
-        """惰性创建材质识别器"""
-        if self.material_recognizer is None:
+    def _ensure_material_recognizer(self, mat_cfg: Optional[Dict[str, Any]] = None) -> Optional[MaterialRecognizer]:
+        """?????????"""
+        cfg = None if mat_cfg is None else dict(mat_cfg)
+        if cfg is None:
+            cfg = self._get_material_config()
+        cfg = None if cfg is None else dict(cfg)
+        if cfg and not cfg.get("enabled", True):
+            self.material_recognizer = None
+            self._material_recognizer_cfg = cfg
+            return None
+        if self.material_recognizer is None or self._material_recognizer_cfg != cfg:
             try:
-                mat_cfg = self._get_material_config()
-                if mat_cfg and not mat_cfg.get("enabled", True):
-                    self.material_recognizer = None
-                else:
-                    self.material_recognizer = MaterialRecognizer(mat_cfg or {})
+                self.material_recognizer = MaterialRecognizer(cfg or {})
+                self._material_recognizer_cfg = cfg
             except Exception as e:
-                self.logger.warning(f"加载材质识别模型失败，将跳过材质识别: {e}")
+                self.logger.warning(f"??????????????????: {e}")
                 self.material_recognizer = None
+                self._material_recognizer_cfg = cfg
         return self.material_recognizer
 
-    def _ensure_pose_estimator(self) -> Optional[PoseEstimator]:
-        """惰性创建姿态估计器"""
-        if self.pose_estimator is None:
+    def _ensure_pose_estimator(self, pose_cfg: Optional[Dict[str, Any]] = None) -> Optional[PoseEstimator]:
+        """?????????"""
+        cfg = None if pose_cfg is None else dict(pose_cfg)
+        if cfg is None:
+            cfg = self._get_pose_config()
+        if cfg is None:
+            cfg = {"method": "stub"}
+        if self.pose_estimator is None or self._pose_estimator_cfg != cfg:
             try:
-                pose_cfg = self._get_pose_config()
-                if pose_cfg is None:
-                    pose_cfg = {"method": "stub"}
-                self.pose_estimator = PoseEstimator(pose_cfg)
+                self.pose_estimator = PoseEstimator(cfg)
+                self._pose_estimator_cfg = dict(cfg)
             except Exception as e:
-                self.logger.warning(f"加载姿态估计模型失败，将使用占位姿态: {e}")
+                self.logger.warning(f"??????????????????: {e}")
                 self.pose_estimator = None
+                self._pose_estimator_cfg = dict(cfg)
         return self.pose_estimator
 
 
@@ -1060,110 +1242,80 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "机械臂", str(e))
 
-    def _run_detection_on_image(
-        self,
-        image: np.ndarray,
-        depth_image: Optional[np.ndarray] = None,
-        intrinsics: Optional[Dict[str, Any]] = None,
-    ):
-        """在给定图像上运行检测+材质识别，并更新视图（可选深度增强位姿）"""
-        detector = self._ensure_object_detector()
+    def _run_analysis_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        image = task.get("color_image")
+        if image is None:
+            raise RuntimeError("?????")
+        depth_image = task.get("depth_image")
+        intrinsics = dict(task.get("intrinsics") or {})
+        detector = self._ensure_object_detector(task.get("detection_cfg"))
         if detector is None:
-            now = time.time()
-            if now - self.last_detection_error_time > self.detection_error_cooldown:
-                self._show_camera_error("检测模型未加载，请安装依赖并配置权重")
-                self.last_detection_error_time = now
-            return
-
+            raise RuntimeError("??????????????????")
         if not getattr(detector, "model_ready", False):
-            now = time.time()
-            if now - self.last_detection_error_time > self.detection_error_cooldown:
-                detail = getattr(detector, "last_error", None)
-                message = "检测模型未就绪"
-                if detail:
-                    message = f"{message}: {detail}"
-                self._show_camera_error(message)
-                self.last_detection_error_time = now
-            return
-
-        # 默认使用RGB输入（相机输出为RGB）
-        image_for_model = image
+            detail = getattr(detector, "last_error", None)
+            message = "???????"
+            if detail:
+                message = f"{message}: {detail}"
+            raise RuntimeError(message)
 
         detections = []
         try:
-            if detector and getattr(detector, "model_ready", False):
-                detections = detector.detect(image_for_model).detections
-            elif detector:
-                detections = detector.detect(image_for_model).detections
+            detections = detector.detect(image).detections
         except Exception as det_err:
-            self.logger.warning(f"检测执行失败，使用空结果: {det_err}")
+            self.logger.warning("????????????: %s", det_err)
             detections = []
-
-        # 若无结果，尝试BGR输入（兼容部分模型的颜色习惯）
         if not detections:
             try:
                 image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                alt_detections = detector.detect(image_bgr).detections
-                if alt_detections:
-                    detections = alt_detections
+                detections = detector.detect(image_bgr).detections
             except Exception:
                 pass
 
-        # 记录最近一次检测结果的边界框，供点云融合裁剪ROI使用
-        self.last_detection_bboxes = []
-        for det in detections:
-            bbox = getattr(det, "bbox", getattr(det, "box", []))
-            if bbox and len(bbox) == 4:
-                self.last_detection_bboxes.append([float(v) for v in bbox])
-
+        detection_bboxes: List[List[float]] = []
+        detection_entries: List[Dict[str, Any]] = []
         depth_positions: Dict[int, np.ndarray] = {}
-        self.last_detection_entries = []
         for det in detections:
             bbox = getattr(det, "bbox", getattr(det, "box", []))
             confidence = getattr(det, "confidence", getattr(det, "score", 0.0))
             class_name = getattr(det, "class_name", getattr(det, "label", None))
             if bbox and len(bbox) == 4:
                 bbox_f = [float(v) for v in bbox]
+                detection_bboxes.append(bbox_f)
                 cam_pos = None
                 if depth_image is not None:
-                    cam_pos = self._estimate_object_position_from_depth(
-                        depth_image, bbox_f, intrinsics
-                    )
+                    cam_pos = self._estimate_object_position_from_depth(depth_image, bbox_f, intrinsics)
                 if cam_pos is not None:
                     depth_positions[id(det)] = cam_pos
-                self.last_detection_entries.append({
-                    "bbox": bbox_f,
-                    "confidence": float(confidence),
-                    "class_name": class_name,
-                    "camera_position": cam_pos.tolist() if cam_pos is not None else None,
-                    "camera_position_mm": (cam_pos * 1000.0).tolist() if cam_pos is not None else None,
-                })
-        self.last_detection_time = time.time() if detections else 0.0
+                detection_entries.append(
+                    {
+                        "bbox": bbox_f,
+                        "confidence": float(confidence),
+                        "class_name": class_name,
+                        "camera_position": cam_pos.tolist() if cam_pos is not None else None,
+                        "camera_position_mm": (cam_pos * 1000.0).tolist() if cam_pos is not None else None,
+                    }
+                )
 
-        # 材质识别（可选，依赖 torch/torchvision）
-        mat_recognizer = self._ensure_material_recognizer()
+        mat_recognizer = self._ensure_material_recognizer(task.get("material_cfg"))
         if mat_recognizer:
-            h, w = image.shape[:2]
+            h_img, w_img = image.shape[:2]
             for det in detections:
                 bbox = getattr(det, "bbox", getattr(det, "box", []))
                 if bbox and len(bbox) == 4:
                     x1, y1, x2, y2 = map(int, bbox)
-                    x1 = max(0, min(w - 1, x1))
-                    y1 = max(0, min(h - 1, y1))
-                    x2 = max(0, min(w, x2))
-                    y2 = max(0, min(h, y2))
+                    x1 = max(0, min(w_img - 1, x1))
+                    y1 = max(0, min(h_img - 1, y1))
+                    x2 = max(0, min(w_img, x2))
+                    y2 = max(0, min(h_img, y2))
                     if x2 > x1 and y2 > y1:
                         try:
                             obj_type = getattr(det, "class_name", None) or getattr(det, "label", None)
-                            det.material = mat_recognizer.recognize_from_vision(
-                                image, [x1, y1, x2, y2], object_type=obj_type
-                            )
-                        except Exception as m_err:
-                            self.logger.debug(f"材质识别失败，跳过: {m_err}")
+                            det.material = mat_recognizer.recognize_from_vision(image, [x1, y1, x2, y2], object_type=obj_type)
+                        except Exception as exc:
+                            self.logger.debug("?????????: %s", exc)
 
-        # 姿态估计（有模型则用模型，否则用占位轴）
-        pose_results = []
-        pose_estimator = self._ensure_pose_estimator()
+        pose_results: List[Dict[str, Any]] = []
+        pose_estimator = self._ensure_pose_estimator(task.get("pose_cfg"))
         if pose_estimator and intrinsics:
             cam_mtx = self._build_camera_matrix_from_intrinsics(intrinsics)
             if cam_mtx is not None:
@@ -1176,10 +1328,7 @@ class MainWindow(QMainWindow):
                 try:
                     obj_class = getattr(det, "class_name", None) or "object"
                     pose_estimator.ensure_simple_model(obj_class)
-                    # 传入深度图（若存在）提升姿态估计精度
-                    pose_obj = pose_estimator.estimate_pose(
-                        image, depth_image, obj_class, bbox
-                    )
+                    pose_obj = pose_estimator.estimate_pose(image, depth_image, obj_class, bbox)
                     if pose_obj:
                         pose_dict = {
                             "bbox": bbox,
@@ -1189,29 +1338,82 @@ class MainWindow(QMainWindow):
                             "confidence": pose_obj.confidence,
                             "method": getattr(pose_obj, "method", "pnp"),
                         }
-                except Exception as p_err:
-                    self.logger.debug(f"姿态估计失败，使用占位轴: {p_err}")
+                except Exception as exc:
+                    self.logger.debug("????????????: %s", exc)
             if pose_dict is None:
                 pose_dict = self._generate_pose_stub(bbox, w_img, h_img, getattr(det, "class_name", "object"))
             cam_pos = depth_positions.get(id(det))
             if cam_pos is not None:
-                if pose_dict is None:
-                    pose_dict = self._generate_pose_stub(bbox, w_img, h_img, getattr(det, "class_name", "object"))
                 pose_dict["translation"] = cam_pos
                 pose_dict["method"] = "depth_roi"
-            if pose_dict:
-                pose_results.append(pose_dict)
+            pose_results.append(pose_dict)
 
-        detection_results = self._convert_detections_for_viewer(detections)
-        if self.vision_viewer:
-            try:
-                display_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            except Exception:
-                display_image = image
-            self.vision_viewer.update_image(display_image, "rgb")
-            self.vision_viewer.update_image(detection_results, "detection")
-            self.vision_viewer.update_image(pose_results, "pose")
+        return {
+            "detection_bboxes": detection_bboxes,
+            "detection_entries": detection_entries,
+            "detection_results": self._convert_detections_for_viewer(detections),
+            "pose_results": pose_results,
+            "detection_time": time.time() if detections else 0.0,
+        }
 
+    def _run_pointcloud_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        depth_image = task.get("depth_image")
+        if depth_image is None:
+            raise RuntimeError("Depth frame not available")
+        cfg = dict(task.get("cfg") or {})
+        if not cfg:
+            return {"pointcloud_data": None}
+        frame = SimpleNamespace(
+            timestamp=float(task.get("frame_timestamp", 0.0) or 0.0),
+            color_image=task.get("color_image"),
+            depth_image=depth_image,
+            intrinsics=dict(task.get("intrinsics") or {}),
+        )
+        detection_entries = list(task.get("detection_entries") or [])
+        roi_bbox = self._select_pointcloud_roi(frame, cfg, detection_entries=detection_entries)
+        fusion = self._ensure_pointcloud_fusion()
+        if fusion is not None:
+            if task.get("force") and cfg.get("reset_on_request", False):
+                fusion.reset()
+            if (not cfg.get("roi_use_detection", False)) or roi_bbox is not None:
+                fusion.update(frame.depth_image, frame.color_image, frame.intrinsics or {}, roi_bbox=roi_bbox)
+        if roi_bbox is not None:
+            pointcloud_data = self._build_pointcloud_from_depth(frame, roi_bbox, cfg)
+        elif cfg.get("roi_use_detection", False):
+            pointcloud_data = None
+        else:
+            render_max = int(cfg.get("render_max_points", 20000) or 0)
+            pointcloud_data = self._get_fused_pointcloud_data(render_max)
+            if pointcloud_data is None:
+                pointcloud_data = self._build_pointcloud_from_depth(frame, None, cfg)
+        return {"pointcloud_data": pointcloud_data}
+
+    def _run_detection_on_image(
+        self,
+        image: np.ndarray,
+        depth_image: Optional[np.ndarray] = None,
+        intrinsics: Optional[Dict[str, Any]] = None,
+    ):
+        """??????????+????????????????????"""
+        try:
+            result = self._run_analysis_task(
+                {
+                    "color_image": image,
+                    "depth_image": depth_image,
+                    "intrinsics": dict(intrinsics or {}),
+                    "detection_cfg": self._get_detection_config(),
+                    "material_cfg": self._get_material_config(),
+                    "pose_cfg": self._get_pose_config(),
+                    "reason": "manual-sync",
+                    "show_error": True,
+                }
+            )
+            self._apply_analysis_result({"show_error": True}, result, None)
+        except Exception as exc:
+            now = time.time()
+            if now - self.last_detection_error_time > self.detection_error_cooldown:
+                self._show_camera_error(str(exc))
+                self.last_detection_error_time = now
 
     def _generate_pose_stub(self, bbox, w: int, h: int, obj_class: str = "object") -> Dict[str, Any]:
         """生成基于检测框中心的占位姿态（固定XYZ轴）"""
@@ -1240,26 +1442,23 @@ class MainWindow(QMainWindow):
         }
 
     def _handle_detection_request(self):
-        """处理检测请求：获取帧并运行检测/占位检测"""
+        """?????????????????"""
         try:
             frame = self._get_latest_camera_frame()
             image = frame.color_image
             if image is None:
-                raise RuntimeError("相机帧为空")
-
-            # 将最新帧推送到显示
+                raise RuntimeError("?????")
+            self._manual_detection_requested = True
             self._push_camera_frame_to_viewer(frame)
-            # 将RealSense深度帧传给姿态估计器，便于提升位姿精度
-            self._run_detection_on_image(image, frame.depth_image, frame.intrinsics)
+            self._schedule_analysis_for_frame(frame, reason="manual", show_error=True)
         except Exception as e:
             self._show_camera_error(str(e))
-
     def _handle_auto_detect_toggle(self, enabled: bool):
-        """处理实时检测开关"""
+        """????????"""
         self.auto_detect_enabled = enabled
-        if not enabled:
-            self.detect_in_progress = False
-
+        self.detect_in_progress = False
+        if enabled and self._ros2_vision_latest_frame is not None:
+            self._schedule_analysis_for_frame(self._ros2_vision_latest_frame, reason="manual", show_error=False)
     def _handle_save_image_request(self, filename: str):
         """处理保存图像请求"""
         try:
@@ -1304,53 +1503,21 @@ class MainWindow(QMainWindow):
         """Handle point cloud display request."""
         if not self.vision_viewer:
             return
-        prev_force = self.pointcloud_fusion_force_enabled
-        self.pointcloud_fusion_force_enabled = True
         try:
             frame = self._get_latest_camera_frame()
             if getattr(frame, "depth_image", None) is None:
                 raise RuntimeError("Depth frame not available")
-
+            self.pointcloud_auto_render = True
+            self.pointcloud_fusion_force_enabled = True
+            self._pointcloud_refresh_requested = True
             cfg = self._get_pointcloud_fusion_config() or {}
             if cfg.get("roi_use_detection", False):
                 max_age = float(cfg.get("roi_max_age", 0.5))
                 if (not self.last_detection_entries) or (time.time() - self.last_detection_time > max_age):
-                    self._run_detection_on_image(frame.color_image, frame.depth_image, frame.intrinsics)
-
-            fusion = self._ensure_pointcloud_fusion()
-            if fusion is None or fusion.o3d is None:
-                raise RuntimeError("Open3D not available")
-            if cfg.get("reset_on_request", False):
-                fusion.reset()
-
-            self._update_pointcloud_fusion(frame)
-
-            roi_bbox = self._select_pointcloud_roi(frame, cfg)
-            if roi_bbox is not None:
-                pointcloud_data = self._build_pointcloud_from_depth(frame, roi_bbox, cfg)
-                if pointcloud_data:
-                    self.pointcloud_auto_render = True
-                    self.pointcloud_fusion_force_enabled = True
-                    self.vision_viewer.update_image(pointcloud_data, "pointcloud")
-                    return
-            if cfg.get("roi_use_detection", False):
-                return
-
-            render_max = int(cfg.get("render_max_points", 20000) or 0)
-            pointcloud_data = self._get_fused_pointcloud_data(render_max)
-            if not pointcloud_data:
-                raise RuntimeError("Point cloud is empty")
-            self.pointcloud_auto_render = True
-            self.pointcloud_fusion_force_enabled = True
-            self.vision_viewer.update_image(pointcloud_data, "pointcloud")
+                    self._schedule_analysis_for_frame(frame, reason="manual", show_error=False)
+            self._schedule_pointcloud_for_frame(frame, force=True)
         except Exception as e:
             self._show_camera_error(str(e))
-        finally:
-            if self.pointcloud_auto_render:
-                self.pointcloud_fusion_force_enabled = True
-            else:
-                self.pointcloud_fusion_force_enabled = prev_force
-
     def _handle_pointcloud_save_request(self, filename: str):
         """Handle point cloud save request."""
         prev_force = self.pointcloud_fusion_force_enabled
@@ -1661,12 +1828,12 @@ class MainWindow(QMainWindow):
 
         return {"points": points, "colors": colors}
 
-    def _select_pointcloud_roi(self, frame, cfg: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
-        """根据检测结果选择点云ROI"""
+    def _select_pointcloud_roi(self, frame, cfg: Dict[str, Any], detection_entries: Optional[List[Dict[str, Any]]] = None) -> Optional[Tuple[int, int, int, int]]:
+        """??????????ROI"""
         if not cfg or not cfg.get("roi_use_detection", False):
             return None
 
-        entries = self.last_detection_entries or []
+        entries = detection_entries if detection_entries is not None else (self.last_detection_entries or [])
         min_conf = float(cfg.get("roi_min_confidence", 0.5))
         candidates = [e for e in entries if e.get("confidence", 0.0) >= min_conf]
         if not candidates:
@@ -1699,7 +1866,6 @@ class MainWindow(QMainWindow):
         x2 = max(x1 + 1, min(w, x2 + pad))
         y2 = max(y1 + 1, min(h, y2 + pad))
         return (x1, y1, x2, y2)
-
     def _update_pointcloud_fusion(self, frame) -> None:
         """用最新深度帧更新多视角点云融合结果"""
         if frame is None or frame.depth_image is None:
@@ -2133,42 +2299,43 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self.time_label)
     
     def init_timers(self):
-        """初始化定时器"""
-        # 时间更新定时器
+        """??????"""
         self.time_timer = QTimer()
         self.time_timer.timeout.connect(self.update_time)
-        self.time_timer.start(1000)  # 1秒
-        
-        # 状态更新定时器
+        self.time_timer.start(1000)
+
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.update_status)
-        self.status_timer.start(500)  # 0.5秒
-        
-        # 数据更新定时器（控制频率）
+        self.status_timer.start(500)
+
         self.data_update_timer = QTimer()
         self.data_update_timer.timeout.connect(self.update_all_plots)
-        self.data_update_timer.start(60)  # 约16-17Hz，降低重绘频率
-        
-        # 矢量图更新定时器（较低频率）
+        self.data_update_timer.start(60)
+
         self.vector_update_timer = QTimer()
         self.vector_update_timer.timeout.connect(self.update_vector_visualization)
-        self.vector_update_timer.start(300)  # 约3-4Hz
-        
-        # 数据率计算定时器
+        self.vector_update_timer.start(300)
+
         self.rate_timer = QTimer()
         self.rate_timer.timeout.connect(self.calculate_data_rate)
-        self.rate_timer.start(1000)  # 1秒
-        
-        # 三维力状态更新定时器
+        self.rate_timer.start(1000)
+
         self.force_3d_timer = QTimer()
         self.force_3d_timer.timeout.connect(self.update_3d_force_status)
-        self.force_3d_timer.start(200)  # 5Hz
+        self.force_3d_timer.start(200)
 
-        # ROS2视觉流处理：拉取最新帧 + 单槽位渲染，避免事件队列堆积
         self.ros2_vision_timer = QTimer()
         self.ros2_vision_timer.timeout.connect(self._process_ros2_vision_stream)
-        self.ros2_vision_timer.start(20)  # 50Hz pump, render is rate-limited to 15Hz
-    
+        self.ros2_vision_timer.start(int(self._ros2_vision_render_target_interval_sec * 1000.0))
+
+        self.vision_worker_timer = QTimer()
+        self.vision_worker_timer.timeout.connect(self._poll_vision_workers)
+        self.vision_worker_timer.start(33)
+
+        self.vision_self_check_timer = QTimer()
+        self.vision_self_check_timer.timeout.connect(self._refresh_live_self_check_status)
+        self.vision_self_check_timer.start(1000)
+
     def calculate_data_rate(self):
         """计算并更新数据率"""
         current_time = time.time()
@@ -2308,6 +2475,8 @@ class MainWindow(QMainWindow):
         
         # 存储数据到缓冲区
         self.sensor_data_buffer = data
+        self._tactile_plot_dirty = True
+        self._force_plot_dirty = True
         
         # 提取力数据
         if hasattr(data, 'force_data'):
@@ -2323,37 +2492,37 @@ class MainWindow(QMainWindow):
         self.packet_label.setText(f"数据包: {self.frame_count}")
     
     def update_all_plots(self):
-        """定时更新所有绘图部件（控制频率）"""
+        """????????????????"""
         current_time = time.time()
-        
-        # 控制更新频率
+
         if current_time - self.last_gui_update_time < self.gui_update_interval:
             return
-            
+
         self.last_gui_update_time = current_time
-        
+
         try:
-            # 无数据时不刷新，避免UI空转
             if not self.sensor_data_buffer:
                 return
-            # 在模拟模式下适当降低绘制频率
             if self._is_simulation_mode() and (self.frame_count % 3 != 0):
                 return
-            # 更新触觉图 - 使用新的绘图部件
-            if hasattr(self, 'tactile_plot') and self.sensor_data_buffer:
+            if not self._tactile_plot_dirty and not self._force_plot_dirty:
+                return
+
+            current_tab = self.tab_widget.currentWidget() if hasattr(self, 'tab_widget') else None
+            if hasattr(self, 'tactile_plot') and self.sensor_data_buffer and self._tactile_plot_dirty and current_tab is self.tactile_tab:
                 self.tactile_plot.update_data(self.sensor_data_buffer)
                 self.tactile_plot.update_plots()
-            
-            # 更新力数据图
-            if hasattr(self, 'force_plot') and self.force_data_buffer and (current_time - self.last_gui_update_time) >= 0:
+                self._tactile_plot_dirty = False
+
+            if hasattr(self, 'force_plot') and self.force_data_buffer and self._force_plot_dirty and current_tab is self.force_tab:
                 self.force_plot.update_data(self.force_data_buffer)
                 self.force_plot.update_plots()
-            
+                self._force_plot_dirty = False
+
         except Exception as e:
-            print(f"更新绘图时出错: {e}")
+            print(f"???????: {e}")
             import traceback
             traceback.print_exc()
-    
     def update_vector_visualization(self):
         """更新矢量可视化"""
         try:
@@ -3288,42 +3457,48 @@ class MainWindow(QMainWindow):
             self.logger.error(f"更新UI配置失败: {e}")
     
     def closeEvent(self, event):
-        """关闭事件处理"""
+        """??????"""
         reply = QMessageBox.question(
-            self, "退出系统",
-            "是否退出触觉夹爪控制系统？",
+            self, "????",
+            "?????????????",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
-        if reply == QMessageBox.Yes:
-            self.logger.info("系统关闭")
-            
-            # 发送关闭信号
-            self.request_shutdown.emit()
 
-            # 停止相机捕获
+        if reply == QMessageBox.Yes:
+            self.logger.info("????")
+            self.request_shutdown.emit()
             try:
                 self._handle_disconnect_camera()
             except Exception:
                 pass
-            
-            # 停止所有定时器
+
             self.time_timer.stop()
             self.status_timer.stop()
             self.data_update_timer.stop()
             self.vector_update_timer.stop()
             self.rate_timer.stop()
             self.force_3d_timer.stop()
+            if self.camera_timer:
+                self.camera_timer.stop()
             if hasattr(self, "ros2_vision_timer") and self.ros2_vision_timer:
                 self.ros2_vision_timer.stop()
-            
-            # 接受关闭事件
+            if hasattr(self, "vision_worker_timer") and self.vision_worker_timer:
+                self.vision_worker_timer.stop()
+            if hasattr(self, "vision_self_check_timer") and self.vision_self_check_timer:
+                self.vision_self_check_timer.stop()
+            try:
+                self._analysis_worker.stop()
+            except Exception:
+                pass
+            try:
+                self._pointcloud_worker.stop()
+            except Exception:
+                pass
+
             event.accept()
         else:
-            # 忽略关闭事件
             event.ignore()
-
 
 if __name__ == "__main__":
     # 测试主窗口

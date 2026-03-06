@@ -181,6 +181,27 @@ function Wait-Topic {
     $finalTopics = Get-TopicListSafe -CommandTimeoutSec ([Math]::Max(6, [Math]::Min(10, $TimeoutSec)))
     return (($finalTopics -contains $TopicName) -or ($finalTopics -contains $topicAlt) -or ($finalTopics -contains $topicWithSlash))
 }
+function Wait-MessageOnce {
+    param(
+        [string]$TopicName,
+        [int]$TimeoutSec
+    )
+
+    $outFile = Join-Path $env:TEMP ("programme_echo_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_echo_" + [guid]::NewGuid().ToString() + ".err.log")
+    try {
+        $proc = Start-Ros2CommandProcess -Args @("topic", "echo", $TopicName, "--once") -StdoutPath $outFile -StderrPath $errFile
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
 function Get-TopicAverageHz {
     param(
         [string]$TopicName,
@@ -291,6 +312,9 @@ $mode = if ($UseRealsense2Camera) { "realsense2_camera_node" } else { "tactile_v
 $nodeArgs = New-RealsenseNodeArgs
 $nodeProc = $null
 $consecutiveFailures = 0
+$monitorMode = "warmup"
+$healthySamples = 0
+$lightweightTimeoutSec = [Math]::Max(3, [Math]::Min(6, $TopicTimeoutSec))
 $colorTopic = "/camera/camera/color/image_raw"
 $depthTopic = "/camera/camera/aligned_depth_to_color/image_raw"
 $infoTopic = "/camera/camera/color/camera_info"
@@ -313,38 +337,66 @@ try {
     while ($true) {
         if ($nodeProc.HasExited) {
             Write-WarnMsg "node process exited with code $($nodeProc.ExitCode)"
+            $monitorMode = "degraded"
+            $healthySamples = 0
             $consecutiveFailures += 1
         } else {
-            $colorHz = Get-TopicAverageHz -TopicName $colorTopic -SampleSec $HzSampleSec
-            $depthHz = Get-TopicAverageHz -TopicName $depthTopic -SampleSec $HzSampleSec
-
-            $sampleOk = $true
-            $sampleInconclusive = $false
-            if ($null -eq $colorHz) {
-                $sampleInconclusive = $true
-            } elseif ($colorHz -lt $MinColorHz) {
-                $sampleOk = $false
-            }
-            if ($null -eq $depthHz) {
-                $sampleInconclusive = $true
-            } elseif ($depthHz -lt $MinDepthHz) {
-                $sampleOk = $false
-            }
-
-            if ($sampleOk -and -not $sampleInconclusive) {
-                $consecutiveFailures = 0
-                Write-Ok ("sample healthy: color={0:N3}Hz depth={1:N3}Hz" -f $colorHz, $depthHz)
-            } elseif ($sampleInconclusive) {
-                $consecutiveFailures = 0
-                Write-WarnMsg ("sample inconclusive: color={0} depth={1}; skipping restart because topics are online" -f `
-                    ($(if ($null -eq $colorHz) { "n/a" } else { "{0:N3}Hz" -f $colorHz })), `
-                    ($(if ($null -eq $depthHz) { "n/a" } else { "{0:N3}Hz" -f $depthHz })))
+            if ($monitorMode -eq "steady") {
+                $topicsHealthy = (Wait-Topic -TopicName $colorTopic -TimeoutSec $lightweightTimeoutSec) -and
+                    (Wait-Topic -TopicName $depthTopic -TimeoutSec $lightweightTimeoutSec) -and
+                    (Wait-Topic -TopicName $infoTopic -TimeoutSec $lightweightTimeoutSec)
+                $messageHealthy = $false
+                if ($topicsHealthy) {
+                    $messageHealthy = Wait-MessageOnce -TopicName $infoTopic -TimeoutSec $lightweightTimeoutSec
+                }
+                if ($topicsHealthy -and $messageHealthy) {
+                    $consecutiveFailures = 0
+                    Write-Ok "steady healthy: lightweight topic/message checks passed"
+                } else {
+                    $monitorMode = "degraded"
+                    $healthySamples = 0
+                    $consecutiveFailures += 1
+                    Write-WarnMsg ("steady check failed; switching to degraded sampling fail_count={0}/{1}" -f $consecutiveFailures, $MaxConsecutiveFailures)
+                }
             } else {
-                $consecutiveFailures += 1
-                Write-WarnMsg ("sample degraded: color={0} depth={1} fail_count={2}/{3}" -f `
-                    ($(if ($null -eq $colorHz) { "n/a" } else { "{0:N3}Hz" -f $colorHz })), `
-                    ($(if ($null -eq $depthHz) { "n/a" } else { "{0:N3}Hz" -f $depthHz })), `
-                    $consecutiveFailures, $MaxConsecutiveFailures)
+                $colorHz = Get-TopicAverageHz -TopicName $colorTopic -SampleSec $HzSampleSec
+                $depthHz = Get-TopicAverageHz -TopicName $depthTopic -SampleSec $HzSampleSec
+
+                $sampleOk = $true
+                $sampleInconclusive = $false
+                if ($null -eq $colorHz) {
+                    $sampleInconclusive = $true
+                } elseif ($colorHz -lt $MinColorHz) {
+                    $sampleOk = $false
+                }
+                if ($null -eq $depthHz) {
+                    $sampleInconclusive = $true
+                } elseif ($depthHz -lt $MinDepthHz) {
+                    $sampleOk = $false
+                }
+
+                if ($sampleOk -and -not $sampleInconclusive) {
+                    $consecutiveFailures = 0
+                    $healthySamples += 1
+                    Write-Ok ("sample healthy: color={0:N3}Hz depth={1:N3}Hz" -f $colorHz, $depthHz)
+                    if ($healthySamples -ge 1) {
+                        $monitorMode = "steady"
+                        Write-Ok "watchdog switched to steady lightweight mode"
+                    }
+                } elseif ($sampleInconclusive) {
+                    $consecutiveFailures = 0
+                    $healthySamples = 0
+                    Write-WarnMsg ("sample inconclusive: color={0} depth={1}; keeping degraded mode" -f
+                        ($(if ($null -eq $colorHz) { "n/a" } else { "{0:N3}Hz" -f $colorHz })),
+                        ($(if ($null -eq $depthHz) { "n/a" } else { "{0:N3}Hz" -f $depthHz })))
+                } else {
+                    $healthySamples = 0
+                    $consecutiveFailures += 1
+                    Write-WarnMsg ("sample degraded: color={0} depth={1} fail_count={2}/{3}" -f
+                        ($(if ($null -eq $colorHz) { "n/a" } else { "{0:N3}Hz" -f $colorHz })),
+                        ($(if ($null -eq $depthHz) { "n/a" } else { "{0:N3}Hz" -f $depthHz })),
+                        $consecutiveFailures, $MaxConsecutiveFailures)
+                }
             }
         }
 
@@ -355,6 +407,8 @@ try {
             $nodeProc = Start-RealsenseNodeProcess -NodeArgs $nodeArgs
             Write-Ok "node restarted (pid=$($nodeProc.Id))"
             $consecutiveFailures = 0
+            $monitorMode = "warmup"
+            $healthySamples = 0
         }
 
         Start-Sleep -Seconds $CheckIntervalSec
