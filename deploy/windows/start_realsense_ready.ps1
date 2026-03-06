@@ -109,6 +109,149 @@ function Read-TextSafe {
     return ([string]$contentObj).Trim()
 }
 
+function Get-PreferredPythonCommand {
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return [PSCustomObject]@{ FilePath = "python"; PrefixArgs = @() }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        return [PSCustomObject]@{ FilePath = "py"; PrefixArgs = @("-3") }
+    }
+    return $null
+}
+
+function Invoke-RealsenseStreamProbe {
+    param(
+        [string]$ColorTopic,
+        [string]$DepthTopic,
+        [string]$InfoTopic,
+        [int]$FirstTimeoutSec,
+        [int]$SampleSec
+    )
+
+    $pythonCommand = Get-PreferredPythonCommand
+    if ($null -eq $pythonCommand) {
+        return [PSCustomObject]@{
+            Invoked = $false
+            Success = $false
+            Message = "python executable unavailable for RealSense probe"
+            Result  = $null
+            Stdout  = ""
+            Stderr  = ""
+        }
+    }
+
+    $probeScript = Join-Path $scriptDir "realsense_stream_probe.py"
+    if (-not (Test-Path $probeScript)) {
+        return [PSCustomObject]@{
+            Invoked = $false
+            Success = $false
+            Message = "probe script not found: $probeScript"
+            Result  = $null
+            Stdout  = ""
+            Stderr  = ""
+        }
+    }
+
+    $timeoutSec = [Math]::Max(10, $FirstTimeoutSec + $SampleSec + 8)
+    $outFile = Join-Path $env:TEMP ("programme_rs_probe_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_rs_probe_" + [guid]::NewGuid().ToString() + ".err.log")
+    $argList = @()
+    $argList += $pythonCommand.PrefixArgs
+    $argList += @(
+        $probeScript,
+        "--color-topic", $ColorTopic,
+        "--depth-topic", $DepthTopic,
+        "--info-topic", $InfoTopic,
+        "--first-timeout-sec", ([string]$FirstTimeoutSec),
+        "--sample-sec", ([string]$SampleSec)
+    )
+
+    try {
+        $proc = Start-Process -FilePath $pythonCommand.FilePath -ArgumentList $argList -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $exited = $proc.WaitForExit($timeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return [PSCustomObject]@{
+                Invoked = $false
+                Success = $false
+                Message = "probe timed out after ${timeoutSec}s"
+                Result  = $null
+                Stdout  = Read-TextSafe -Path $outFile
+                Stderr  = Read-TextSafe -Path $errFile
+            }
+        }
+
+        $stdout = Read-TextSafe -Path $outFile
+        $stderr = Read-TextSafe -Path $errFile
+        if (-not $stdout) {
+            return [PSCustomObject]@{
+                Invoked = $false
+                Success = $false
+                Message = if ($stderr) { "probe produced no stdout" } else { "probe returned empty result" }
+                Result  = $null
+                Stdout  = $stdout
+                Stderr  = $stderr
+            }
+        }
+
+        try {
+            $result = $stdout | ConvertFrom-Json
+        }
+        catch {
+            return [PSCustomObject]@{
+                Invoked = $false
+                Success = $false
+                Message = "probe JSON parse failed"
+                Result  = $null
+                Stdout  = $stdout
+                Stderr  = $stderr
+            }
+        }
+
+        return [PSCustomObject]@{
+            Invoked = $true
+            Success = [bool]$result.success
+            Message = if ($result.reason) { [string]$result.reason } else { if ($result.success) { "ok" } else { "probe failed" } }
+            Result  = $result
+            Stdout  = $stdout
+            Stderr  = $stderr
+        }
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Format-RealsenseProbeMessage {
+    param(
+        [object]$ProbeResult,
+        [string]$FallbackMessage = "probe failed"
+    )
+
+    if ($null -eq $ProbeResult) {
+        return $FallbackMessage
+    }
+
+    $missing = @()
+    foreach ($name in @("color", "depth", "camera_info")) {
+        $stream = $ProbeResult.streams.$name
+        if ($null -eq $stream -or -not [bool]$stream.received) {
+            $missing += $name
+        }
+    }
+
+    $publisherSummary = @()
+    foreach ($name in @("color", "depth", "camera_info")) {
+        $publishers = @($ProbeResult.diagnostics.publishers.$name)
+        $publisherSummary += ("{0}:{1}" -f $name, $publishers.Count)
+    }
+
+    $reason = if ($ProbeResult.reason) { [string]$ProbeResult.reason } else { $FallbackMessage }
+    if ($missing.Count -gt 0) {
+        return ("{0}; missing={1}; publishers={2}" -f $reason, ($missing -join ","), ($publisherSummary -join " "))
+    }
+    return ("{0}; publishers={1}" -f $reason, ($publisherSummary -join " "))
+}
 function Get-TopicListSafe {
     param(
         [int]$CommandTimeoutSec = 4
@@ -222,6 +365,7 @@ function Stop-RealsenseProcesses {
         "realsense_camera_node",
         "realsense2_camera_node",
         "realsense2_camera",
+        "realsense_stream_probe.py",
         '"topic" "hz" "/camera/camera',
         '"topic" "echo" "/camera/camera',
         '"topic" "list"'
@@ -368,42 +512,89 @@ function Test-RealsenseReady {
         [double]$MinDepth
     )
 
-    Write-Step "checking topic availability: $ColorTopic (${TopicWaitSec}s)"
-    if (-not (Wait-Topic -TopicName $ColorTopic -TimeoutSec $TopicWaitSec)) {
-        return [PSCustomObject]@{ Success = $false; Message = "color topic not discovered: $ColorTopic"; ColorHz = $null; DepthHz = $null }
+    Write-Step "probing RealSense streams via rclpy (first-message timeout=${TopicWaitSec}s, sample=${SampleWindowSec}s)"
+    $probe = Invoke-RealsenseStreamProbe -ColorTopic $ColorTopic -DepthTopic $DepthTopic -InfoTopic $InfoTopic -FirstTimeoutSec $TopicWaitSec -SampleSec $SampleWindowSec
+
+    if (-not $probe.Invoked) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = $probe.Message
+            ColorHz = $null
+            DepthHz = $null
+            Probe = $null
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
-    Write-Step "checking topic availability: $DepthTopic (${TopicWaitSec}s)"
-    if (-not (Wait-Topic -TopicName $DepthTopic -TimeoutSec $TopicWaitSec)) {
-        return [PSCustomObject]@{ Success = $false; Message = "depth topic not discovered: $DepthTopic"; ColorHz = $null; DepthHz = $null }
-    }
-    Write-Step "checking topic availability: $InfoTopic (${TopicWaitSec}s)"
-    if (-not (Wait-Topic -TopicName $InfoTopic -TimeoutSec $TopicWaitSec)) {
-        return [PSCustomObject]@{ Success = $false; Message = "camera_info topic not discovered: $InfoTopic"; ColorHz = $null; DepthHz = $null }
-    }
-    Write-Step "checking camera_info message once (best effort)"
-    if (-not (Wait-MessageOnce -TopicName $InfoTopic -TimeoutSec 8)) {
-        Write-WarnMsg "camera_info message not received within 8s; continue with hz checks"
+    if (-not $probe.Success) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = (Format-RealsenseProbeMessage -ProbeResult $probe.Result -FallbackMessage $probe.Message)
+            ColorHz = $null
+            DepthHz = $null
+            Probe = $probe.Result
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
 
-    Write-Step "sampling color topic hz (${SampleWindowSec}s)"
-    $colorHz = Get-TopicAverageHz -TopicName $ColorTopic -SampleSec $SampleWindowSec
-    Write-Step "sampling depth topic hz (${SampleWindowSec}s)"
-    $depthHz = Get-TopicAverageHz -TopicName $DepthTopic -SampleSec $SampleWindowSec
+    $colorHz = $probe.Result.streams.color.sample_hz
+    $depthHz = $probe.Result.streams.depth.sample_hz
     if ($null -eq $colorHz) {
-        Write-WarnMsg "unable to calculate color hz; topics are online, keeping RealSense node running"
-        return [PSCustomObject]@{ Success = $true; Message = "topic checks passed; color hz unavailable"; ColorHz = $null; DepthHz = $depthHz }
+        Write-WarnMsg "probe succeeded but color hz is unavailable; keeping RealSense node running"
+        return [PSCustomObject]@{
+            Success = $true
+            Message = "probe passed; color hz unavailable"
+            ColorHz = $null
+            DepthHz = $depthHz
+            Probe = $probe.Result
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
     if ($null -eq $depthHz) {
-        Write-WarnMsg "unable to calculate depth hz; topics are online, keeping RealSense node running"
-        return [PSCustomObject]@{ Success = $true; Message = "topic checks passed; depth hz unavailable"; ColorHz = $colorHz; DepthHz = $null }
+        Write-WarnMsg "probe succeeded but depth hz is unavailable; keeping RealSense node running"
+        return [PSCustomObject]@{
+            Success = $true
+            Message = "probe passed; depth hz unavailable"
+            ColorHz = $colorHz
+            DepthHz = $null
+            Probe = $probe.Result
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
-    if ($colorHz -lt $MinColor) {
-        return [PSCustomObject]@{ Success = $false; Message = ("color hz {0:N3} < min {1:N3}" -f $colorHz, $MinColor); ColorHz = $colorHz; DepthHz = $depthHz }
+    if ([double]$colorHz -lt $MinColor) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = ("color hz {0:N3} < min {1:N3}" -f $colorHz, $MinColor)
+            ColorHz = [double]$colorHz
+            DepthHz = [double]$depthHz
+            Probe = $probe.Result
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
-    if ($depthHz -lt $MinDepth) {
-        return [PSCustomObject]@{ Success = $false; Message = ("depth hz {0:N3} < min {1:N3}" -f $depthHz, $MinDepth); ColorHz = $colorHz; DepthHz = $depthHz }
+    if ([double]$depthHz -lt $MinDepth) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = ("depth hz {0:N3} < min {1:N3}" -f $depthHz, $MinDepth)
+            ColorHz = [double]$colorHz
+            DepthHz = [double]$depthHz
+            Probe = $probe.Result
+            ProbeStdout = $probe.Stdout
+            ProbeStderr = $probe.Stderr
+        }
     }
-    return [PSCustomObject]@{ Success = $true; Message = "ok"; ColorHz = $colorHz; DepthHz = $depthHz }
+    return [PSCustomObject]@{
+        Success = $true
+        Message = "ok"
+        ColorHz = [double]$colorHz
+        DepthHz = [double]$depthHz
+        Probe = $probe.Result
+        ProbeStdout = $probe.Stdout
+        ProbeStderr = $probe.Stderr
+    }
 }
 
 Write-Step "loading ROS2 Windows environment"
@@ -493,16 +684,22 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
 
 $lastMessage = if ($lastResult -and $lastResult.Message) { $lastResult.Message } else { "unknown failure" }
 Write-Fail ("RealSense did not reach ready state after {0} attempts. Last error: {1}" -f $StartupRetryCount, $lastMessage)
-Write-Host "[DIAG] current camera topics:"
-try {
-    $diagTopics = Get-TopicListSafe -CommandTimeoutSec 6 | Where-Object { $_ -match "camera/camera" }
-    if ($diagTopics.Count -gt 0) {
-        $diagTopics | ForEach-Object { Write-Host $_ }
-    } else {
-        Write-WarnMsg "no camera topics discovered during diagnostic listing"
+if ($lastResult -and $lastResult.Probe) {
+    Write-Host "[DIAG] probe diagnostics:"
+    try {
+        $lastResult.Probe | ConvertTo-Json -Depth 8 | Write-Host
     }
-}
-catch {
-    Write-WarnMsg "unable to list camera topics for diagnostics"
+    catch {
+        Write-WarnMsg "unable to print probe diagnostics"
+    }
+} elseif ($lastResult -and ($lastResult.ProbeStdout -or $lastResult.ProbeStderr)) {
+    if ($lastResult.ProbeStdout) {
+        Write-Host "[DIAG][probe stdout]"
+        Write-Host $lastResult.ProbeStdout
+    }
+    if ($lastResult.ProbeStderr) {
+        Write-Host "[DIAG][probe stderr]"
+        Write-Host $lastResult.ProbeStderr
+    }
 }
 exit 1
