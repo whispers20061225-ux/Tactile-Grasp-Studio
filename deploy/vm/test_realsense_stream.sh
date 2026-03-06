@@ -9,6 +9,9 @@ MIN_DEPTH_HZ="${5:-3.0}"
 HZ_RETRY_COUNT="${6:-3}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROBE_SCRIPT="${SCRIPT_DIR}/realsense_stream_probe.py"
+PYTHON_CMD=""
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 # refresh graph cache before camera checks
@@ -18,6 +21,51 @@ ros2 daemon start >/dev/null 2>&1 || true
 COLOR_TOPIC="/camera/camera/color/image_raw"
 DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
 INFO_TOPIC="/camera/camera/color/camera_info"
+
+get_python_cmd() {
+  if [[ -n "${PYTHON_CMD}" ]]; then
+    printf '%s\n' "${PYTHON_CMD}"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+  else
+    echo "[FAIL] python is unavailable in VM ROS2 environment" >&2
+    return 1
+  fi
+  printf '%s\n' "${PYTHON_CMD}"
+}
+
+json_probe_field() {
+  local json_payload="$1"
+  local field_path="$2"
+  printf '%s' "${json_payload}" | "$(get_python_cmd)" -c '
+import json
+import sys
+
+field_path = sys.argv[1].split(".")
+data = json.load(sys.stdin)
+value = data
+for part in field_path:
+    if isinstance(value, dict):
+        value = value.get(part)
+    else:
+        value = None
+        break
+if value is None:
+    raise SystemExit(1)
+if isinstance(value, bool):
+    print("true" if value else "false")
+else:
+    print(value)
+' "${field_path}"
+}
+
+run_realsense_probe() {
+  "$(get_python_cmd)" "${PROBE_SCRIPT}"     --color-topic "${COLOR_TOPIC}"     --depth-topic "${DEPTH_TOPIC}"     --info-topic "${INFO_TOPIC}"     --first-timeout-sec "$1"     --sample-sec "$2"
+}
 
 wait_for_topic() {
   local topic="$1"
@@ -37,63 +85,6 @@ wait_for_topic() {
   return 1
 }
 
-wait_for_message() {
-  local topic="$1"
-  local timeout_sec="$2"
-  local elapsed=0
-  while (( elapsed < timeout_sec )); do
-    if timeout 2s ros2 topic echo "${topic}" --once >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  return 1
-}
-
-sample_hz_once() {
-  local topic="$1"
-  local sample_sec="$2"
-  local out_file
-  local err_file
-  local hz_pid
-  local output
-  out_file="$(mktemp)"
-  err_file="$(mktemp)"
-
-  set +e
-  stdbuf -oL -eL ros2 topic hz "${topic}" >"${out_file}" 2>"${err_file}" &
-  hz_pid=$!
-  set -e
-
-  sleep "${sample_sec}"
-  kill "${hz_pid}" >/dev/null 2>&1 || true
-  wait "${hz_pid}" >/dev/null 2>&1 || true
-
-  output="$(cat "${out_file}" "${err_file}" 2>/dev/null || true)"
-  rm -f "${out_file}" "${err_file}" || true
-  echo "${output}" | awk '/average rate/ {print $3}' | tail -n 1
-}
-
-sample_hz_retry() {
-  local topic="$1"
-  local sample_sec="$2"
-  local retry_count="$3"
-  local attempt=1
-  local rate=""
-  while (( attempt <= retry_count )); do
-    rate="$(sample_hz_once "${topic}" "${sample_sec}" || true)"
-    if [[ -n "${rate}" ]]; then
-      echo "${rate}"
-      return 0
-    fi
-    echo "[WARN] attempt ${attempt}/${retry_count}: no average rate captured for ${topic}" >&2
-    sleep 2
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
-
 check_rate() {
   local rate="$1"
   local minimum="$2"
@@ -105,42 +96,54 @@ wait_for_topic "${COLOR_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
 wait_for_topic "${DEPTH_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
 wait_for_topic "${INFO_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
 
-echo "[INFO] waiting for first camera messages..."
-if ! wait_for_message "${COLOR_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
-  echo "[FAIL] color topic exists but no message arrived within ${TOPIC_TIMEOUT_SEC}s: ${COLOR_TOPIC}" >&2
+echo "[INFO] probing first camera messages and sampling hz (${HZ_SAMPLE_SEC}s)..."
+set +e
+probe_output="$(run_realsense_probe "${TOPIC_TIMEOUT_SEC}" "${HZ_SAMPLE_SEC}" 2>&1)"
+probe_rc=$?
+set -e
+if [[ ${probe_rc} -ne 0 ]]; then
+  probe_reason="$(json_probe_field "${probe_output}" "reason" 2>/dev/null || echo "probe_failed")"
+  echo "[FAIL] RealSense VM probe failed: ${probe_reason}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
   exit 1
 fi
-if ! wait_for_message "${DEPTH_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
-  echo "[FAIL] depth topic exists but no message arrived within ${TOPIC_TIMEOUT_SEC}s: ${DEPTH_TOPIC}" >&2
+
+color_received="$(json_probe_field "${probe_output}" "streams.color.received" 2>/dev/null || echo "false")"
+depth_received="$(json_probe_field "${probe_output}" "streams.depth.received" 2>/dev/null || echo "false")"
+info_received="$(json_probe_field "${probe_output}" "streams.camera_info.received" 2>/dev/null || echo "false")"
+if [[ "${color_received}" != "true" ]]; then
+  echo "[FAIL] color topic exists but probe received no message: ${COLOR_TOPIC}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
   exit 1
 fi
-if ! wait_for_message "${INFO_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
-  echo "[FAIL] camera_info topic exists but no message arrived within ${TOPIC_TIMEOUT_SEC}s: ${INFO_TOPIC}" >&2
+if [[ "${depth_received}" != "true" ]]; then
+  echo "[FAIL] depth topic exists but probe received no message: ${DEPTH_TOPIC}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
+  exit 1
+fi
+if [[ "${info_received}" != "true" ]]; then
+  echo "[FAIL] camera_info topic exists but probe received no message: ${INFO_TOPIC}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
   exit 1
 fi
 echo "[OK] first camera messages received."
 
-echo "[INFO] sampling color topic hz (${HZ_SAMPLE_SEC}s)..."
-color_rate="$(sample_hz_retry "${COLOR_TOPIC}" "${HZ_SAMPLE_SEC}" "${HZ_RETRY_COUNT}" || true)"
+color_rate="$(json_probe_field "${probe_output}" "streams.color.sample_hz" 2>/dev/null || true)"
+depth_rate="$(json_probe_field "${probe_output}" "streams.depth.sample_hz" 2>/dev/null || true)"
 if [[ -z "${color_rate}" ]]; then
-  echo "[FAIL] no average rate captured for ${COLOR_TOPIC} after ${HZ_RETRY_COUNT} attempts" >&2
+  echo "[FAIL] probe captured no color average rate for ${COLOR_TOPIC}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
+  exit 1
+fi
+if [[ -z "${depth_rate}" ]]; then
+  echo "[FAIL] probe captured no depth average rate for ${DEPTH_TOPIC}" >&2
+  echo "[DIAG][probe] ${probe_output}" >&2
   exit 1
 fi
 echo "[INFO] color average rate: ${color_rate} Hz"
-
-echo "[INFO] sampling depth topic hz (${HZ_SAMPLE_SEC}s)..."
-depth_rate="$(sample_hz_retry "${DEPTH_TOPIC}" "${HZ_SAMPLE_SEC}" "${HZ_RETRY_COUNT}" || true)"
-if [[ -z "${depth_rate}" ]]; then
-  echo "[FAIL] no average rate captured for ${DEPTH_TOPIC} after ${HZ_RETRY_COUNT} attempts" >&2
-  exit 1
-fi
 echo "[INFO] depth average rate: ${depth_rate} Hz"
 
 echo "[INFO] checking camera_info once..."
-if ! timeout 8s ros2 topic echo "${INFO_TOPIC}" --once >/dev/null 2>&1; then
-  echo "[FAIL] camera_info did not arrive within 8s" >&2
-  exit 1
-fi
 echo "[OK] camera_info received."
 
 if ! check_rate "${color_rate}" "${MIN_COLOR_HZ}"; then
