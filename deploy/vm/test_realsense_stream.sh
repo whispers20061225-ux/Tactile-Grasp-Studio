@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROBE_SCRIPT="${SCRIPT_DIR}/realsense_stream_probe.py"
 PYTHON_CMD=""
+VM_ROS_PYTHON_ENV="${VM_ROS_PYTHON:-}"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 # refresh graph cache before camera checks
@@ -22,20 +23,60 @@ COLOR_TOPIC="/camera/camera/color/image_raw"
 DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
 INFO_TOPIC="/camera/camera/color/camera_info"
 
+python_supports_ros_probe() {
+  local candidate="$1"
+  set +e
+  "${candidate}" -c 'import json, yaml, rclpy' >/dev/null 2>&1
+  local rc=$?
+  set -e
+  return ${rc}
+}
+
 get_python_cmd() {
   if [[ -n "${PYTHON_CMD}" ]]; then
     printf '%s\n' "${PYTHON_CMD}"
     return 0
   fi
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_CMD="python3"
-  elif command -v python >/dev/null 2>&1; then
-    PYTHON_CMD="python"
-  else
-    echo "[FAIL] python is unavailable in VM ROS2 environment" >&2
-    return 1
+
+  local candidates=()
+  local candidate=""
+  local resolved=""
+  local diagnostics=()
+
+  if [[ -n "${VM_ROS_PYTHON_ENV}" ]]; then
+    candidates+=("${VM_ROS_PYTHON_ENV}")
   fi
-  printf '%s\n' "${PYTHON_CMD}"
+  candidates+=("/usr/bin/python3" "python3" "python")
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -z "${candidate}" ]]; then
+      continue
+    fi
+    resolved="${candidate}"
+    if [[ "${candidate}" != */* ]]; then
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      if [[ -z "${resolved}" ]]; then
+        diagnostics+=("${candidate}: not found")
+        continue
+      fi
+    elif [[ ! -x "${candidate}" ]]; then
+      diagnostics+=("${candidate}: not executable")
+      continue
+    fi
+
+    if python_supports_ros_probe "${resolved}"; then
+      PYTHON_CMD="${resolved}"
+      printf '%s\n' "${PYTHON_CMD}"
+      return 0
+    fi
+    diagnostics+=("${resolved}: missing python modules (need yaml + rclpy)")
+  done
+
+  echo "[FAIL] no VM python interpreter can import yaml and rclpy" >&2
+  for candidate in "${diagnostics[@]}"; do
+    echo "[DIAG][python] ${candidate}" >&2
+  done
+  return 1
 }
 
 json_probe_field() {
