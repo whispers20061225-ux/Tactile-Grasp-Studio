@@ -20,7 +20,7 @@ def generate_launch_description() -> LaunchDescription:
         [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop.world"]
     )
     default_xacro = PathJoinSubstitution(
-        [FindPackageShare("tactile_sim"), "urdf", "phase6_arm.urdf.xacro"]
+        [FindPackageShare("tactile_sim"), "urdf", "dofbot_gazebo.urdf.xacro"]
     )
 
     world_arg = DeclareLaunchArgument(
@@ -40,8 +40,23 @@ def generate_launch_description() -> LaunchDescription:
     )
     entity_name_arg = DeclareLaunchArgument(
         "entity_name",
-        default_value="phase6_arm",
+        default_value="dofbot",
         description="Spawned entity name",
+    )
+    spawn_x_arg = DeclareLaunchArgument(
+        "spawn_x",
+        default_value="0.24",
+        description="Spawn x position in the Gazebo world",
+    )
+    spawn_y_arg = DeclareLaunchArgument(
+        "spawn_y",
+        default_value="0.0",
+        description="Spawn y position in the Gazebo world",
+    )
+    spawn_z_arg = DeclareLaunchArgument(
+        "spawn_z",
+        default_value="0.405",
+        description="Spawn z position in the Gazebo world",
     )
     start_gui_arg = DeclareLaunchArgument(
         "start_gui",
@@ -63,6 +78,9 @@ def generate_launch_description() -> LaunchDescription:
     xacro_file = LaunchConfiguration("xacro_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     entity_name = LaunchConfiguration("entity_name")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
     start_gui = LaunchConfiguration("start_gui")
     world_name = LaunchConfiguration("world_name")
     bridge_clock = LaunchConfiguration("bridge_clock")
@@ -114,7 +132,7 @@ def generate_launch_description() -> LaunchDescription:
     spawn_entity = Node(
         package="ros_gz_sim",
         executable="create",
-        name="spawn_phase6_arm",
+        name="spawn_dofbot",
         output="screen",
         arguments=[
             "-name",
@@ -122,11 +140,11 @@ def generate_launch_description() -> LaunchDescription:
             "-topic",
             "robot_description",
             "-x",
-            "0.0",
+            spawn_x,
             "-y",
-            "0.0",
+            spawn_y,
             "-z",
-            "0.42",
+            spawn_z,
         ],
     )
 
@@ -192,6 +210,9 @@ def generate_launch_description() -> LaunchDescription:
             xacro_file_arg,
             use_sim_time_arg,
             entity_name_arg,
+            spawn_x_arg,
+            spawn_y_arg,
+            spawn_z_arg,
             start_gui_arg,
             world_name_arg,
             bridge_clock_arg,

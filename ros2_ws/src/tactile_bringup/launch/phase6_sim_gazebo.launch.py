@@ -26,6 +26,21 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Set true to launch Gazebo Sim GUI",
     )
+    spawn_x_arg = DeclareLaunchArgument(
+        "spawn_x",
+        default_value="0.24",
+        description="Spawn x position for the Gazebo robot entity",
+    )
+    spawn_y_arg = DeclareLaunchArgument(
+        "spawn_y",
+        default_value="0.0",
+        description="Spawn y position for the Gazebo robot entity",
+    )
+    spawn_z_arg = DeclareLaunchArgument(
+        "spawn_z",
+        default_value="0.405",
+        description="Spawn z position for the Gazebo robot entity",
+    )
     world_name_arg = DeclareLaunchArgument(
         "world_name",
         default_value="phase6_tabletop_world",
@@ -40,6 +55,9 @@ def generate_launch_description() -> LaunchDescription:
     param_file = LaunchConfiguration("param_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_gui = LaunchConfiguration("start_gui")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
     world_name = LaunchConfiguration("world_name")
     bridge_clock = LaunchConfiguration("bridge_clock")
 
@@ -52,6 +70,9 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "use_sim_time": use_sim_time,
             "start_gui": start_gui,
+            "spawn_x": spawn_x,
+            "spawn_y": spawn_y,
+            "spawn_z": spawn_z,
             "world_name": world_name,
             "bridge_clock": bridge_clock,
         }.items(),
@@ -102,6 +123,9 @@ def generate_launch_description() -> LaunchDescription:
             param_file_arg,
             use_sim_time_arg,
             start_gui_arg,
+            spawn_x_arg,
+            spawn_y_arg,
+            spawn_z_arg,
             world_name_arg,
             bridge_clock_arg,
             gazebo_arm_launch,

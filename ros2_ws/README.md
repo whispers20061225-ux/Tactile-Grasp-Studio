@@ -201,6 +201,10 @@ ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{
 
 ## Run phase 6.2 (Gazebo Sim + ros2_control kickoff)
 
+The Gazebo kickoff path now loads the DOF Bot robot model from
+`tactile_sim/urdf/dofbot_gazebo.urdf.xacro` and installs the matching
+`tactile_sim/meshes/*.STL` assets into the ROS package.
+
 Install runtime dependencies once (Ubuntu 24.04 + ROS2 Jazzy):
 
 ```bash
@@ -223,6 +227,13 @@ One-click VM startup:
 bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
 ```
 
+Override the DOF Bot spawn pose from the guard script if needed:
+
+```bash
+GAZEBO_SPAWN_X=0.24 GAZEBO_SPAWN_Y=0.0 GAZEBO_SPAWN_Z=0.405 \
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 true true
+```
+
 Terminal A:
 
 ```bash
@@ -233,6 +244,12 @@ Optional GUI mode:
 
 ```bash
 ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+```
+
+Adjust the DOF Bot spawn pose if needed:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true spawn_x:=0.24 spawn_y:=0.0 spawn_z:=0.405
 ```
 
 Disable clock bridge (debug only):

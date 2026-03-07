@@ -11,12 +11,12 @@ controller_manager:
 joint_trajectory_controller:
   ros__parameters:
     joints:
-      - joint1
-      - joint2
-      - joint3
-      - joint4
-      - joint5
-      - joint6
+      - arm_joint1
+      - arm_joint2
+      - arm_joint3
+      - arm_joint4
+      - arm_joint5
+      - grip_joint
     command_interfaces:
       - position
     state_interfaces:
@@ -26,9 +26,9 @@ joint_trajectory_controller:
     constraints:
       goal_time: 0.8
       stopped_velocity_tolerance: 0.02
-      joint1: {trajectory: 0.2, goal: 0.1}
-      joint2: {trajectory: 0.2, goal: 0.1}
-      joint3: {trajectory: 0.2, goal: 0.1}
-      joint4: {trajectory: 0.2, goal: 0.1}
-      joint5: {trajectory: 0.2, goal: 0.1}
-      joint6: {trajectory: 0.2, goal: 0.1}
+      arm_joint1: {trajectory: 0.2, goal: 0.1}
+      arm_joint2: {trajectory: 0.2, goal: 0.1}
+      arm_joint3: {trajectory: 0.2, goal: 0.1}
+      arm_joint4: {trajectory: 0.2, goal: 0.1}
+      arm_joint5: {trajectory: 0.2, goal: 0.1}
+      grip_joint: {trajectory: 0.2, goal: 0.1}

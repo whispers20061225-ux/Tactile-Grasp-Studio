@@ -22,7 +22,8 @@ arm_sim_driver_node:
     home_duration_ms: 1500
     home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     initial_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+    joint_zero_offsets_deg: [-90.0, 0.0, 0.0, 0.0, -90.0, 0.0]
+    joint_names: ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
     enforce_angle_limits: true
     min_angle_deg: -180.0
     max_angle_deg: 270.0
@@ -74,8 +75,8 @@ demo_task_node:
     command_timeout_sec: 8.0
     auto_prepare_arm: true
     default_gripper_joint_id: 6
-    default_open_angle_deg: 85.0
-    default_close_angle_deg: 35.0
+    default_open_angle_deg: 0.0
+    default_close_angle_deg: -80.0
     default_motion_duration_ms: 800
 
 tactile_ui_subscriber:

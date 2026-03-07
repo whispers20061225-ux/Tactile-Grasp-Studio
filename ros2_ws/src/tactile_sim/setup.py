@@ -1,7 +1,14 @@
+from glob import glob
+from pathlib import Path
+
 from setuptools import find_packages, setup
 
 
 package_name = "tactile_sim"
+repo_root = Path(__file__).resolve().parents[3]
+mesh_files = sorted(
+    str(path) for path in (repo_root / "models" / "meshes").glob("*") if path.is_file()
+)
 
 setup(
     name=package_name,
@@ -24,9 +31,11 @@ setup(
         ),
         (
             f"share/{package_name}/urdf",
-            [
-                "urdf/phase6_arm.urdf.xacro",
-            ],
+            sorted(glob("urdf/*.xacro")),
+        ),
+        (
+            f"share/{package_name}/meshes",
+            mesh_files,
         ),
         (
             f"share/{package_name}/worlds",

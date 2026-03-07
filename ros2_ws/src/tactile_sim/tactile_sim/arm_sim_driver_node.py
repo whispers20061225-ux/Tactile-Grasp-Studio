@@ -51,6 +51,7 @@ class ArmSimDriverNode(Node):
         self.declare_parameter("home_duration_ms", 1500)
         self.declare_parameter("home_joint_angles", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter("initial_joint_angles", Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter("joint_zero_offsets_deg", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter("joint_names", Parameter.Type.STRING_ARRAY)
 
         self.declare_parameter("enforce_angle_limits", True)
@@ -124,6 +125,9 @@ class ArmSimDriverNode(Node):
         if not initial_joint_angles:
             initial_joint_angles = list(home_joint_angles)
         initial_joint_angles = self._normalize_angles(initial_joint_angles, default_value=0.0)
+        self.joint_zero_offsets_deg = self._normalize_angles(
+            self._parse_float_list_param("joint_zero_offsets_deg"), default_value=0.0
+        )
 
         self._state_lock = threading.Lock()
         self._connected = bool(self.auto_enable)
@@ -173,6 +177,10 @@ class ArmSimDriverNode(Node):
             f"num_joints={self.arm_num_joints}, auto_enable={self.auto_enable}, "
             f"mode={self.simulation_mode_label}"
         )
+        if any(abs(offset) > 1e-6 for offset in self.joint_zero_offsets_deg):
+            self.get_logger().info(
+                f"arm joint zero offsets enabled: {self.joint_zero_offsets_deg}"
+            )
 
     def _init_ros2_control_backend(self) -> None:
         if ROS2_CONTROL_IMPORT_ERROR is not None:
@@ -245,6 +253,18 @@ class ArmSimDriverNode(Node):
         if requested_duration_ms > 0:
             return int(requested_duration_ms)
         return int(self.command_default_duration_ms)
+
+    def _user_to_model_angles(self, angles_deg: List[float]) -> List[float]:
+        return [
+            float(angle) + self.joint_zero_offsets_deg[idx]
+            for idx, angle in enumerate(angles_deg)
+        ]
+
+    def _model_to_user_angles(self, angles_deg: List[float]) -> List[float]:
+        return [
+            float(angle) - self.joint_zero_offsets_deg[idx]
+            for idx, angle in enumerate(angles_deg)
+        ]
 
     def _validate_joint_id(self, joint_id: int) -> Tuple[bool, str]:
         if joint_id < 1 or joint_id > self.arm_num_joints:
@@ -323,7 +343,9 @@ class ArmSimDriverNode(Node):
                 idx = name_to_idx.get(joint_name)
                 if idx is None or idx >= len(msg.position):
                     continue
-                next_angles[i] = math.degrees(float(msg.position[idx]))
+                next_angles[i] = (
+                    math.degrees(float(msg.position[idx])) - self.joint_zero_offsets_deg[i]
+                )
                 updated = True
 
             if updated:
@@ -370,7 +392,8 @@ class ArmSimDriverNode(Node):
         goal.trajectory.joint_names = list(self.joint_names)
 
         point = JointTrajectoryPoint()
-        point.positions = [math.radians(float(v)) for v in target_angles_deg]
+        target_model_angles_deg = self._user_to_model_angles(target_angles_deg)
+        point.positions = [math.radians(float(v)) for v in target_model_angles_deg]
         point.time_from_start.sec = int(sec)
         point.time_from_start.nanosec = int(nanosec)
         goal.trajectory.points = [point]

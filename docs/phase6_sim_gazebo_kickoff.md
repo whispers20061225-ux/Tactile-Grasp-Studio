@@ -5,7 +5,8 @@ This file tracks the first Gazebo Sim integration step for phase 6.2.
 ## Implemented in this kickoff
 
 - Extended `tactile_sim` package with Gazebo Sim assets:
-  - `urdf/phase6_arm.urdf.xacro`
+  - `urdf/dofbot_gazebo.urdf.xacro`
+  - `meshes/*.STL` (same DOF Bot mesh set referenced by `models/dofbot.urdf`)
   - `worlds/phase6_tabletop.world`
   - `config/ros2_controllers.yaml`
   - `launch/gazebo_arm.launch.py`
@@ -48,6 +49,13 @@ One-click VM startup:
 bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
 ```
 
+Override the DOF Bot spawn pose from the guard script if needed:
+
+```bash
+GAZEBO_SPAWN_X=0.24 GAZEBO_SPAWN_Y=0.0 GAZEBO_SPAWN_Z=0.405 \
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 true true
+```
+
 Manual launch, Terminal A:
 
 ```bash
@@ -61,6 +69,12 @@ Optional GUI mode:
 
 ```bash
 ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+```
+
+Adjust the DOF Bot spawn pose if needed:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true spawn_x:=0.24 spawn_y:=0.0 spawn_z:=0.405
 ```
 
 Disable clock bridge (debug only):

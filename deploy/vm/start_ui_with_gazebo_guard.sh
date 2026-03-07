@@ -14,6 +14,9 @@ USE_SIM_TIME="${USE_SIM_TIME:-true}"
 SHOW_VISION_UI="${SHOW_VISION_UI:-false}"
 SHOW_SIMULATION_UI="${SHOW_SIMULATION_UI:-false}"
 GAZEBO_WORLD_NAME="${GAZEBO_WORLD_NAME:-phase6_tabletop_world}"
+GAZEBO_SPAWN_X="${GAZEBO_SPAWN_X:-0.24}"
+GAZEBO_SPAWN_Y="${GAZEBO_SPAWN_Y:-0.0}"
+GAZEBO_SPAWN_Z="${GAZEBO_SPAWN_Z:-0.405}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -362,6 +365,9 @@ launch_args=(
   "bridge_clock:=${BRIDGE_CLOCK}"
   "use_sim_time:=${USE_SIM_TIME}"
   "world_name:=${GAZEBO_WORLD_NAME}"
+  "spawn_x:=${GAZEBO_SPAWN_X}"
+  "spawn_y:=${GAZEBO_SPAWN_Y}"
+  "spawn_z:=${GAZEBO_SPAWN_Z}"
 )
 ros2 launch tactile_bringup phase6_sim_gazebo.launch.py "${launch_args[@]}" >"${LAUNCH_LOG_FILE}" 2>&1 &
 LAUNCH_PID="$!"
@@ -485,7 +491,7 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 
-echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME}"
+echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME} spawn=(${GAZEBO_SPAWN_X},${GAZEBO_SPAWN_Y},${GAZEBO_SPAWN_Z})"
 echo "[READY] all Gazebo guards passed, launching UI..."
 python "${PROJECT_ROOT}/main_ros2.py" \
   --control-mode ros2 \
