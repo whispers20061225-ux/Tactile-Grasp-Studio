@@ -19,7 +19,7 @@ arm_sim_driver_node:
     auto_enable: false
     arm_num_joints: 6
     command_default_duration_ms: 1000
-    home_duration_ms: 1500
+    home_duration_ms: 3500
     home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     initial_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_zero_offsets_deg: [-90.0, 0.0, 0.0, 0.0, -90.0, 0.0]
@@ -30,7 +30,7 @@ arm_sim_driver_node:
     joint_state_topic: "/joint_states"
     trajectory_action_name: "/joint_trajectory_controller/follow_joint_trajectory"
     action_server_timeout_sec: 5.0
-    trajectory_result_timeout_sec: 12.0
+    trajectory_result_timeout_sec: 18.0
     joint_state_stale_timeout_sec: 1.5
     state_topic: "/arm/state"
     health_topic: "/system/health"

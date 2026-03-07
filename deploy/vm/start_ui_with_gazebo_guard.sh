@@ -18,6 +18,8 @@ GAZEBO_SPAWN_X="${GAZEBO_SPAWN_X:-0.24}"
 GAZEBO_SPAWN_Y="${GAZEBO_SPAWN_Y:-0.0}"
 GAZEBO_SPAWN_Z="${GAZEBO_SPAWN_Z:-0.405}"
 GAZEBO_UI_COMMAND_TIMEOUT_SEC="${GAZEBO_UI_COMMAND_TIMEOUT_SEC:-15.0}"
+GAZEBO_AUTO_HOME_ON_START="${GAZEBO_AUTO_HOME_ON_START:-true}"
+GAZEBO_HOME_TIMEOUT_SEC="${GAZEBO_HOME_TIMEOUT_SEC:-25}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -182,6 +184,27 @@ call_setbool_service() {
 
   set +e
   output="$(timeout "${timeout_sec}s" ros2 service call "${service_name}" std_srvs/srv/SetBool "{data: ${data_value}}" 2>&1)"
+  rc=$?
+  set -e
+
+  echo "${output}"
+  if [[ ${rc} -ne 0 ]]; then
+    return 1
+  fi
+  if echo "${output}" | tr '[:upper:]' '[:lower:]' | grep -Eq 'success[[:space:]]*[:=][[:space:]]*true'; then
+    return 0
+  fi
+  return 1
+}
+
+call_trigger_service() {
+  local service_name="$1"
+  local timeout_sec="$2"
+  local output=""
+  local rc=1
+
+  set +e
+  output="$(timeout "${timeout_sec}s" ros2 service call "${service_name}" std_srvs/srv/Trigger "{}" 2>&1)"
   rc=$?
   set -e
 
@@ -552,6 +575,20 @@ if ! wait_for_arm_connected_state "${ARM_TIMEOUT_SEC}"; then
 fi
 log_ok "simulated arm backend is enabled and connected"
 
+if is_true "${GAZEBO_AUTO_HOME_ON_START}"; then
+  log_step "homing simulated arm to configured Gazebo home pose"
+  arm_home_output="$(call_trigger_service "/control/arm/home" "${GAZEBO_HOME_TIMEOUT_SEC}" || true)"
+  if ! echo "${arm_home_output}" | tr '[:upper:]' '[:lower:]' | grep -Eq 'success[[:space:]]*[:=][[:space:]]*true'; then
+    log_fail "failed to home simulated arm via /control/arm/home"
+    if [[ -n "${arm_home_output}" ]]; then
+      echo "${arm_home_output}" >&2
+    fi
+    dump_runtime_diagnostics
+    exit 1
+  fi
+  log_ok "simulated arm homed to Gazebo startup pose"
+fi
+
 log_step "starting UI in ROS2 Gazebo mode"
 if [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
   # shellcheck disable=SC1091
@@ -566,7 +603,7 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 
-echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME} spawn=(${GAZEBO_SPAWN_X},${GAZEBO_SPAWN_Y},${GAZEBO_SPAWN_Z}) command_timeout=${GAZEBO_UI_COMMAND_TIMEOUT_SEC}s"
+echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME} spawn=(${GAZEBO_SPAWN_X},${GAZEBO_SPAWN_Y},${GAZEBO_SPAWN_Z}) command_timeout=${GAZEBO_UI_COMMAND_TIMEOUT_SEC}s auto_home=${GAZEBO_AUTO_HOME_ON_START}"
 echo "[READY] all Gazebo guards passed, launching UI..."
 python "${PROJECT_ROOT}/main_ros2.py" \
   --control-mode ros2 \

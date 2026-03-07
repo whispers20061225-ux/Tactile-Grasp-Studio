@@ -41,6 +41,9 @@ class GazeboDofbotConfigTests(unittest.TestCase):
             self.assertIn(joint_name, controller_text)
 
         self.assertNotIn("\n      - joint1\n", controller_text)
+        self.assertIn("goal_time: 2.0", controller_text)
+        self.assertIn("stopped_velocity_tolerance: 0.05", controller_text)
+        self.assertIn("arm_joint1: {trajectory: 0.8, goal: 0.2}", controller_text)
 
     def test_phase6_gazebo_profile_matches_dofbot_semantics(self):
         profile_text = (
@@ -54,6 +57,8 @@ class GazeboDofbotConfigTests(unittest.TestCase):
 
         self.assertIn('joint_names: ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]', profile_text)
         self.assertIn("joint_zero_offsets_deg: [-90.0, 0.0, 0.0, 0.0, -90.0, 0.0]", profile_text)
+        self.assertIn("home_duration_ms: 3500", profile_text)
+        self.assertIn("trajectory_result_timeout_sec: 18.0", profile_text)
         self.assertIn("default_open_angle_deg: 0.0", profile_text)
         self.assertIn("default_close_angle_deg: -80.0", profile_text)
 
@@ -117,8 +122,11 @@ class GazeboDofbotConfigTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("command_timeout_sec: 15.0", profile_text)
-        self.assertIn("trajectory_result_timeout_sec: 12.0", profile_text)
+        self.assertIn("trajectory_result_timeout_sec: 18.0", profile_text)
         self.assertIn('GAZEBO_UI_COMMAND_TIMEOUT_SEC="${GAZEBO_UI_COMMAND_TIMEOUT_SEC:-15.0}"', startup_script)
+        self.assertIn('GAZEBO_AUTO_HOME_ON_START="${GAZEBO_AUTO_HOME_ON_START:-true}"', startup_script)
+        self.assertIn('GAZEBO_HOME_TIMEOUT_SEC="${GAZEBO_HOME_TIMEOUT_SEC:-25}"', startup_script)
+        self.assertIn('call_trigger_service "/control/arm/home"', startup_script)
         self.assertIn("ReentrantCallbackGroup", driver_text)
         self.assertIn("MultiThreadedExecutor", driver_text)
         self.assertNotIn("spin_until_future_complete", driver_text)

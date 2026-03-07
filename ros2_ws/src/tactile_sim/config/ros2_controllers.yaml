@@ -24,11 +24,11 @@ joint_trajectory_controller:
       - velocity
     allow_partial_joints_goal: false
     constraints:
-      goal_time: 0.8
-      stopped_velocity_tolerance: 0.02
-      arm_joint1: {trajectory: 0.2, goal: 0.1}
-      arm_joint2: {trajectory: 0.2, goal: 0.1}
-      arm_joint3: {trajectory: 0.2, goal: 0.1}
-      arm_joint4: {trajectory: 0.2, goal: 0.1}
-      arm_joint5: {trajectory: 0.2, goal: 0.1}
-      grip_joint: {trajectory: 0.2, goal: 0.1}
+      goal_time: 2.0
+      stopped_velocity_tolerance: 0.05
+      arm_joint1: {trajectory: 0.8, goal: 0.2}
+      arm_joint2: {trajectory: 0.8, goal: 0.2}
+      arm_joint3: {trajectory: 0.8, goal: 0.2}
+      arm_joint4: {trajectory: 0.8, goal: 0.2}
+      arm_joint5: {trajectory: 0.8, goal: 0.2}
+      grip_joint: {trajectory: 0.8, goal: 0.2}
