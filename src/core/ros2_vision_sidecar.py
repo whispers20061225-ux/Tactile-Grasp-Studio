@@ -163,6 +163,7 @@ class _VisionSidecarNode(Node):
         self._vision_subscription_mode = (
             self.vision_qos_mode if self.vision_qos_mode in ("reliable", "best_effort") else "reliable"
         )
+        self._vision_reliability = self._initial_vision_reliability(self._vision_subscription_mode)
         self._vision_auto_qos_probe_active = False
         self._vision_auto_qos_probe_deadline_ts = 0.0
         self._vision_auto_qos_probe_color_count = 0
@@ -183,7 +184,7 @@ class _VisionSidecarNode(Node):
         return ReliabilityPolicy.RELIABLE
 
     def _make_vision_qos(self, reliability=None):
-        effective = reliability if reliability is not None else self._initial_vision_reliability(self._vision_subscription_mode)
+        effective = reliability if reliability is not None else self._vision_reliability
         return QoSProfile(
             reliability=effective,
             history=HistoryPolicy.KEEP_LAST,
@@ -225,8 +226,8 @@ class _VisionSidecarNode(Node):
         color_enabled = bool(color_enabled)
         depth_enabled = bool(depth_enabled)
         info_enabled = bool(info_enabled)
-        desired_reliability = reliability if reliability is not None else self._initial_vision_reliability(self._vision_subscription_mode)
-        qos_changed = not self._reliability_matches(self._initial_vision_reliability(self._vision_subscription_mode), desired_reliability)
+        desired_reliability = reliability if reliability is not None else self._vision_reliability
+        qos_changed = not self._reliability_matches(self._vision_reliability, desired_reliability)
         qos = self._make_vision_qos(desired_reliability)
 
         self._reconcile_subscription("_vision_color_sub", color_enabled, Image, self.color_topic, self._on_color, qos, qos_changed)
@@ -242,6 +243,7 @@ class _VisionSidecarNode(Node):
         self._vision_color_subscription_enabled = color_enabled
         self._vision_depth_subscription_enabled = depth_enabled
         self._vision_info_subscription_enabled = info_enabled
+        self._vision_reliability = desired_reliability
         self._vision_subscription_mode = self._reliability_label(desired_reliability)
 
         if changed and log_change:
