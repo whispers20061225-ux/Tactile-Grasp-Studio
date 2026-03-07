@@ -52,7 +52,7 @@ arm_control_node:
     control_reset_emergency_service: "/system/reset_emergency"
     arm_num_joints: 6
     arm_state_timeout_sec: 2.0
-    command_timeout_sec: 8.0
+    command_timeout_sec: 15.0
     client_retry_count: 1
     emergency_latch_level: 2
     reject_on_arm_error: true
@@ -72,7 +72,7 @@ demo_task_node:
     default_duration_sec: 15.0
     max_duration_sec: 120.0
     feedback_rate_hz: 10.0
-    command_timeout_sec: 8.0
+    command_timeout_sec: 15.0
     auto_prepare_arm: true
     default_gripper_joint_id: 6
     default_open_angle_deg: 0.0

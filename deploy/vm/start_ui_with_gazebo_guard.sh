@@ -17,6 +17,7 @@ GAZEBO_WORLD_NAME="${GAZEBO_WORLD_NAME:-phase6_tabletop_world}"
 GAZEBO_SPAWN_X="${GAZEBO_SPAWN_X:-0.24}"
 GAZEBO_SPAWN_Y="${GAZEBO_SPAWN_Y:-0.0}"
 GAZEBO_SPAWN_Z="${GAZEBO_SPAWN_Z:-0.405}"
+GAZEBO_UI_COMMAND_TIMEOUT_SEC="${GAZEBO_UI_COMMAND_TIMEOUT_SEC:-15.0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -565,10 +566,11 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 
-echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME} spawn=(${GAZEBO_SPAWN_X},${GAZEBO_SPAWN_Y},${GAZEBO_SPAWN_Z})"
+echo "[INFO] Gazebo UI profile: start_gui=${START_GUI} bridge_clock=${BRIDGE_CLOCK} use_sim_time=${USE_SIM_TIME} spawn=(${GAZEBO_SPAWN_X},${GAZEBO_SPAWN_Y},${GAZEBO_SPAWN_Z}) command_timeout=${GAZEBO_UI_COMMAND_TIMEOUT_SEC}s"
 echo "[READY] all Gazebo guards passed, launching UI..."
 python "${PROJECT_ROOT}/main_ros2.py" \
   --control-mode ros2 \
+  --command-timeout-sec "${GAZEBO_UI_COMMAND_TIMEOUT_SEC}" \
   --vision-enabled false \
   --show-vision-ui "${SHOW_VISION_UI}" \
   --show-simulation-ui "${SHOW_SIMULATION_UI}" \

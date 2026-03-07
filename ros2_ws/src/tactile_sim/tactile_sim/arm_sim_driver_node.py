@@ -6,6 +6,8 @@ import time
 from typing import List, Optional, Tuple
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -130,6 +132,9 @@ class ArmSimDriverNode(Node):
         )
 
         self._state_lock = threading.Lock()
+        self._service_group = ReentrantCallbackGroup()
+        self._backend_group = ReentrantCallbackGroup()
+        self._timer_group = ReentrantCallbackGroup()
         self._connected = bool(self.auto_enable)
         self._moving = False
         self._error = False
@@ -158,18 +163,22 @@ class ArmSimDriverNode(Node):
         if self.backend == "ros2_control":
             self._init_ros2_control_backend()
 
-        self.enable_srv = self.create_service(SetBool, "/arm/enable", self._on_enable)
-        self.home_srv = self.create_service(Trigger, "/arm/home", self._on_home)
+        self.enable_srv = self.create_service(
+            SetBool, "/arm/enable", self._on_enable, callback_group=self._service_group
+        )
+        self.home_srv = self.create_service(
+            Trigger, "/arm/home", self._on_home, callback_group=self._service_group
+        )
         self.move_joint_srv = self.create_service(
-            MoveArmJoint, "/arm/move_joint", self._on_move_joint
+            MoveArmJoint, "/arm/move_joint", self._on_move_joint, callback_group=self._service_group
         )
         self.move_joints_srv = self.create_service(
-            MoveArmJoints, "/arm/move_joints", self._on_move_joints
+            MoveArmJoints, "/arm/move_joints", self._on_move_joints, callback_group=self._service_group
         )
 
         state_period = max(0.01, 1.0 / max(1.0, self.state_rate_hz))
-        self.create_timer(state_period, self._on_state_timer)
-        self.create_timer(1.0, self._publish_health)
+        self.create_timer(state_period, self._on_state_timer, callback_group=self._timer_group)
+        self.create_timer(1.0, self._publish_health, callback_group=self._timer_group)
 
         self.get_logger().info(
             "arm_sim_driver_node started: "
@@ -204,11 +213,13 @@ class ArmSimDriverNode(Node):
             self.joint_state_topic,
             self._on_joint_state,
             joint_qos,
+            callback_group=self._backend_group,
         )
         self._trajectory_client = ActionClient(
             self,
             FollowJointTrajectory,
             self.trajectory_action_name,
+            callback_group=self._backend_group,
         )
         self.get_logger().info(
             "ros2_control backend initialized: "
@@ -374,6 +385,16 @@ class ArmSimDriverNode(Node):
             return False
         return (time.time() - ts) <= self.joint_state_stale_timeout_sec
 
+    def _wait_for_future(self, future, timeout_sec: float):
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout=max(0.1, float(timeout_sec))):
+            return None, "future timeout"
+        try:
+            return future.result(), ""
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
+
     def _execute_ros2_trajectory(
         self,
         target_angles_deg: List[float],
@@ -405,31 +426,34 @@ class ArmSimDriverNode(Node):
             self._error_message = ""
 
         send_future = self._trajectory_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=self.action_server_timeout_sec)
-        if not send_future.done():
+        goal_handle, error = self._wait_for_future(send_future, self.action_server_timeout_sec)
+        if goal_handle is None:
             with self._state_lock:
+                self._error = True
+                self._error_message = f"trajectory goal send failed: {error}"
                 self._moving = False
-            return False, "send trajectory goal timeout"
-
-        goal_handle = send_future.result()
+            return False, self._error_message
         if goal_handle is None or not goal_handle.accepted:
             with self._state_lock:
+                self._error = True
+                self._error_message = "trajectory goal rejected"
                 self._moving = False
-            return False, "trajectory goal rejected"
+            return False, self._error_message
 
         if not wait:
             return True, "trajectory goal accepted"
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(
-            self,
+        wrapped, error = self._wait_for_future(
             result_future,
             timeout_sec=max(self.trajectory_result_timeout_sec, duration_ms / 1000.0 + 1.0),
         )
-        if not result_future.done():
-            return False, "trajectory result timeout"
-
-        wrapped = result_future.result()
+        if wrapped is None:
+            with self._state_lock:
+                self._error = True
+                self._error_message = f"trajectory result wait failed: {error}"
+                self._moving = False
+            return False, self._error_message
         if wrapped is None:
             return False, "trajectory result unavailable"
 
@@ -719,11 +743,17 @@ class ArmSimDriverNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ArmSimDriverNode()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            executor.shutdown()
+        except Exception:
+            pass
         node.destroy_node()
         try:
             if rclpy.ok():
