@@ -203,6 +203,19 @@ class _VisionSidecarNode(Node):
             return ReliabilityPolicy.BEST_EFFORT
         return ReliabilityPolicy.RELIABLE
 
+    def _detect_auto_subscription_mode(self) -> str:
+        try:
+            infos = list(self.get_publishers_info_by_topic(self.color_topic) or [])
+        except Exception:
+            infos = []
+        for info in infos:
+            qos_profile = getattr(info, "qos_profile", None)
+            reliability = getattr(qos_profile, "reliability", None)
+            label = self._reliability_label(reliability)
+            if label in ("best_effort", "reliable"):
+                return label
+        return "best_effort"
+
     def _make_vision_qos(self, reliability=None):
         effective = reliability if reliability is not None else self._vision_reliability
         return QoSProfile(
@@ -374,15 +387,16 @@ class _VisionSidecarNode(Node):
             self._vision_auto_qos_probe_deadline_ts = 0.0
             self._vision_auto_qos_probe_color_count = self._vision_color_count
             return
-        self._vision_subscription_mode = "reliable"
         if mode == "auto":
-            self._vision_auto_qos_probe_active = True
-            self._vision_auto_qos_probe_deadline_ts = now + 2.5
-            self._vision_auto_qos_probe_color_count = self._vision_color_count
-        else:
+            self._vision_subscription_mode = self._detect_auto_subscription_mode()
             self._vision_auto_qos_probe_active = False
             self._vision_auto_qos_probe_deadline_ts = 0.0
             self._vision_auto_qos_probe_color_count = self._vision_color_count
+            return
+        self._vision_subscription_mode = "reliable"
+        self._vision_auto_qos_probe_active = False
+        self._vision_auto_qos_probe_deadline_ts = 0.0
+        self._vision_auto_qos_probe_color_count = self._vision_color_count
 
     def _update_transport_plan(self) -> None:
         color_enabled, depth_enabled, info_enabled = self._compute_transport_plan()

@@ -482,7 +482,6 @@ class MainWindow(QMainWindow):
     def _handle_connect_camera(self):
         """处理视觉视图发起的连接请求"""
         if self._is_ros2_vision_mode():
-            self._handle_disconnect_camera()
             try:
                 self.data_acquisition_thread.request_vision_connect()
                 self._sync_vision_depth_profile()

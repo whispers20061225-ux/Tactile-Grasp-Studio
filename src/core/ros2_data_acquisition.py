@@ -1027,12 +1027,15 @@ class Ros2DataAcquisitionThread(QThread):
             )
             return
         with self._vision_lock:
+            already_requested = bool(self._vision_stream_requested)
             self._vision_stream_requested = True
-            self._reset_local_vision_state_locked()
-            if not self._vision_sidecar_enabled:
-                self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=True)
+            if not already_requested:
+                self._reset_local_vision_state_locked()
+                if not self._vision_sidecar_enabled:
+                    self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=True)
         if self._vision_sidecar_enabled:
-            self._send_vision_sidecar_command("connect")
+            if not already_requested:
+                self._send_vision_sidecar_command("connect")
             self.vision_status.emit(
                 {
                     "connected": False,
@@ -1058,6 +1061,7 @@ class Ros2DataAcquisitionThread(QThread):
 
     def request_vision_disconnect(self) -> None:
         with self._vision_lock:
+            already_disconnected = not bool(self._vision_stream_requested)
             self._vision_stream_requested = False
             self._vision_resolution = "N/A"
             self._vision_depth_profile = "off"
@@ -1069,7 +1073,7 @@ class Ros2DataAcquisitionThread(QThread):
             self._reset_local_vision_state_locked()
             if not self._vision_sidecar_enabled:
                 self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
-        if self._vision_sidecar_enabled:
+        if self._vision_sidecar_enabled and not already_disconnected:
             self._send_vision_sidecar_command("disconnect")
         self.vision_status.emit(
             {
