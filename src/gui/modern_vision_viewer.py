@@ -8,7 +8,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -142,6 +142,10 @@ class VideoFrameWidget(QWidget):
         self.setMinimumSize(640, 480)
         self._image_scale = 1.0
         self._frame: Optional[QImage] = None
+        self._frame_pixmap: Optional[QPixmap] = None
+        self._scaled_pixmap: Optional[QPixmap] = None
+        self._scaled_cache_key = None
+        self._frame_serial = 0
         self._placeholder = "等待图像"
         self._detections: List[Dict[str, Any]] = []
         self._poses: List[Dict[str, Any]] = []
@@ -151,28 +155,43 @@ class VideoFrameWidget(QWidget):
         self._show_keypoints = True
         self._show_pose_axes = True
 
+    def _invalidate_frame_cache(self) -> None:
+        self._frame_pixmap = None
+        self._scaled_pixmap = None
+        self._scaled_cache_key = None
+
     def set_image_scale(self, scale: float) -> None:
         self._image_scale = max(0.1, float(scale))
+        self._scaled_pixmap = None
+        self._scaled_cache_key = None
         self.update()
 
     def clear_frame(self, placeholder: Optional[str] = None) -> None:
         self._frame = None
+        self._frame_serial += 1
+        self._invalidate_frame_cache()
         if placeholder:
             self._placeholder = placeholder
         self.update()
 
     def set_rgb_frame(self, image: Optional[np.ndarray]) -> None:
         self._frame = rgb_array_to_qimage(image)
+        self._frame_serial += 1
+        self._invalidate_frame_cache()
         self.update()
 
     def set_qimage_frame(self, frame: Optional[QImage], placeholder: Optional[str] = None) -> None:
         self._frame = None if frame is None else QImage(frame)
+        self._frame_serial += 1
+        self._invalidate_frame_cache()
         if placeholder:
             self._placeholder = placeholder
         self.update()
 
     def set_depth_frame(self, depth: Optional[np.ndarray]) -> None:
         self._frame = depth_array_to_qimage(depth)
+        self._frame_serial += 1
+        self._invalidate_frame_cache()
         self.update()
 
     def set_detection_results(self, detections: Optional[List[Dict[str, Any]]]) -> None:
@@ -191,6 +210,20 @@ class VideoFrameWidget(QWidget):
         self._show_pose_axes = bool(show_pose_axes)
         self.update()
 
+    def _get_scaled_pixmap(self, target_rect: QRectF) -> Optional[QPixmap]:
+        if self._frame is None or self._frame.isNull():
+            return None
+        target_width = max(1, int(round(target_rect.width())))
+        target_height = max(1, int(round(target_rect.height())))
+        cache_key = (self._frame_serial, target_width, target_height)
+        if self._scaled_cache_key == cache_key and self._scaled_pixmap is not None and not self._scaled_pixmap.isNull():
+            return self._scaled_pixmap
+        if self._frame_pixmap is None or self._frame_pixmap.isNull():
+            self._frame_pixmap = QPixmap.fromImage(self._frame)
+        self._scaled_pixmap = self._frame_pixmap.scaled(target_width, target_height, Qt.KeepAspectRatio, Qt.FastTransformation)
+        self._scaled_cache_key = cache_key
+        return self._scaled_pixmap
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#2b2b2b"))
@@ -200,7 +233,10 @@ class VideoFrameWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, self._placeholder)
             return
         target_rect = self._compute_target_rect(self._frame.width(), self._frame.height())
-        painter.drawImage(target_rect, self._frame)
+        pixmap = self._get_scaled_pixmap(target_rect)
+        if pixmap is None or pixmap.isNull():
+            return
+        painter.drawPixmap(target_rect.topLeft(), pixmap)
         if self.mode == "detection":
             self._draw_detections(painter, target_rect)
         elif self.mode == "pose":

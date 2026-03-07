@@ -4,8 +4,10 @@ import logging
 import multiprocessing as mp
 import os
 import queue
+import struct
 import time
 from dataclasses import dataclass
+from multiprocessing import shared_memory
 from threading import Lock
 from typing import Any, Dict, Optional
 
@@ -65,6 +67,38 @@ class Ros2CameraFrame:
     depth_image: Optional[np.ndarray]
     intrinsics: Dict[str, float]
     color_qimage: Optional[QImage] = None
+
+
+_VISION_SHM_HEADER_SIZE = 8
+_VISION_COLOR_SHM_BYTES = 1920 * 1080 * 3
+_VISION_DEPTH_SHM_BYTES = 1920 * 1080 * 2
+
+
+def _read_ndarray_from_shared_memory(shm_obj, *, shape, dtype) -> Optional[np.ndarray]:
+    if shm_obj is None or shape is None:
+        return None
+    try:
+        np_dtype = np.dtype(dtype)
+        shape_tuple = tuple(int(v) for v in shape)
+        item_count = int(np.prod(shape_tuple))
+        if item_count <= 0:
+            return None
+        byte_count = item_count * np_dtype.itemsize
+        max_bytes = len(shm_obj.buf) - _VISION_SHM_HEADER_SIZE
+        if byte_count <= 0 or byte_count > max_bytes:
+            return None
+        for _ in range(5):
+            version1 = struct.unpack_from("<Q", shm_obj.buf, 0)[0]
+            if version1 & 1:
+                continue
+            arr = np.frombuffer(shm_obj.buf, dtype=np_dtype, count=item_count, offset=_VISION_SHM_HEADER_SIZE).copy()
+            version2 = struct.unpack_from("<Q", shm_obj.buf, 0)[0]
+            if version1 == version2 and not (version2 & 1):
+                return arr.reshape(shape_tuple)
+        arr = np.frombuffer(shm_obj.buf, dtype=np_dtype, count=item_count, offset=_VISION_SHM_HEADER_SIZE).copy()
+        return arr.reshape(shape_tuple)
+    except Exception:
+        return None
 
 
 def _rgb_array_to_qimage(image: Optional[np.ndarray]) -> Optional[QImage]:
@@ -360,6 +394,9 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_sidecar_status_queue = None
         self._vision_sidecar_error_queue = None
         self._vision_sidecar_dead = False
+        self._vision_sidecar_color_shm = None
+        self._vision_sidecar_depth_shm = None
+        self._last_sidecar_status_signature = None
 
         # Vision runtime caches.
         self._vision_stream_requested = False
@@ -703,12 +740,43 @@ class Ros2DataAcquisitionThread(QThread):
             )
             return
 
-        self._vision_sidecar_ctx = mp.get_context("spawn")
+        start_method = "spawn"
+        if os.name != "nt":
+            try:
+                start_methods = set(mp.get_all_start_methods())
+            except Exception:
+                start_methods = set()
+            if "fork" in start_methods:
+                start_method = "fork"
+        self._vision_sidecar_ctx = mp.get_context(start_method)
         self._vision_sidecar_command_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
         self._vision_sidecar_frame_queue = self._vision_sidecar_ctx.Queue(maxsize=1)
         self._vision_sidecar_status_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
         self._vision_sidecar_error_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
         self._vision_sidecar_dead = False
+        self._last_sidecar_status_signature = None
+
+        try:
+            self._vision_sidecar_color_shm = shared_memory.SharedMemory(create=True, size=_VISION_SHM_HEADER_SIZE + _VISION_COLOR_SHM_BYTES)
+            struct.pack_into("<Q", self._vision_sidecar_color_shm.buf, 0, 0)
+            self._vision_sidecar_depth_shm = shared_memory.SharedMemory(create=True, size=_VISION_SHM_HEADER_SIZE + _VISION_DEPTH_SHM_BYTES)
+            struct.pack_into("<Q", self._vision_sidecar_depth_shm.buf, 0, 0)
+        except Exception:
+            if self._vision_sidecar_color_shm is not None:
+                try:
+                    self._vision_sidecar_color_shm.close()
+                    self._vision_sidecar_color_shm.unlink()
+                except Exception:
+                    pass
+                self._vision_sidecar_color_shm = None
+            if self._vision_sidecar_depth_shm is not None:
+                try:
+                    self._vision_sidecar_depth_shm.close()
+                    self._vision_sidecar_depth_shm.unlink()
+                except Exception:
+                    pass
+                self._vision_sidecar_depth_shm = None
+            raise
 
         config = {
             "color_topic": self.color_topic,
@@ -718,6 +786,10 @@ class Ros2DataAcquisitionThread(QThread):
             "vision_max_fps": self.vision_max_fps,
             "vision_qos_mode": self.vision_qos_mode,
             "log_level": logging.getLevelName(self.logger.level or logging.INFO),
+            "color_shm_name": self._vision_sidecar_color_shm.name,
+            "color_shm_bytes": _VISION_COLOR_SHM_BYTES,
+            "depth_shm_name": self._vision_sidecar_depth_shm.name,
+            "depth_shm_bytes": _VISION_DEPTH_SHM_BYTES,
         }
         self._vision_sidecar_process = self._vision_sidecar_ctx.Process(
             target=run_vision_sidecar,
@@ -731,7 +803,7 @@ class Ros2DataAcquisitionThread(QThread):
             daemon=True,
         )
         self._vision_sidecar_process.start()
-        self.logger.info("ROS2 vision sidecar started (pid=%s)", self._vision_sidecar_process.pid)
+        self.logger.info("ROS2 vision sidecar started (pid=%s, start_method=%s)", self._vision_sidecar_process.pid, start_method)
         if self._vision_stream_requested:
             self._send_vision_sidecar_command("connect")
             if self._vision_depth_profile != "off":
@@ -739,28 +811,55 @@ class Ros2DataAcquisitionThread(QThread):
 
     def _stop_vision_sidecar(self) -> None:
         proc = self._vision_sidecar_process
-        if proc is None:
-            return
-        try:
-            self._send_vision_sidecar_command("shutdown")
-        except Exception:
-            pass
-        try:
-            proc.join(timeout=2.0)
-        except Exception:
-            pass
-        if proc.is_alive():
+        if proc is not None:
             try:
-                proc.terminate()
-                proc.join(timeout=1.0)
+                self._send_vision_sidecar_command("shutdown")
             except Exception:
                 pass
+            try:
+                proc.join(timeout=2.0)
+            except Exception:
+                pass
+            if proc.is_alive():
+                try:
+                    proc.terminate()
+                    proc.join(timeout=1.0)
+                except Exception:
+                    pass
+
+        for q in (self._vision_sidecar_command_queue, self._vision_sidecar_frame_queue, self._vision_sidecar_status_queue, self._vision_sidecar_error_queue):
+            if q is None:
+                continue
+            try:
+                q.close()
+            except Exception:
+                pass
+            try:
+                q.cancel_join_thread()
+            except Exception:
+                pass
+
+        for shm_attr in ("_vision_sidecar_color_shm", "_vision_sidecar_depth_shm"):
+            shm_obj = getattr(self, shm_attr, None)
+            if shm_obj is None:
+                continue
+            try:
+                shm_obj.close()
+            except Exception:
+                pass
+            try:
+                shm_obj.unlink()
+            except Exception:
+                pass
+            setattr(self, shm_attr, None)
+
         self._vision_sidecar_process = None
         self._vision_sidecar_command_queue = None
         self._vision_sidecar_frame_queue = None
         self._vision_sidecar_status_queue = None
         self._vision_sidecar_error_queue = None
         self._vision_sidecar_ctx = None
+        self._last_sidecar_status_signature = None
 
     def _send_vision_sidecar_command(self, action: str, **payload: Any) -> None:
         if not self._vision_sidecar_enabled or self._vision_sidecar_command_queue is None:
@@ -770,6 +869,20 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_sidecar_command_queue.put_nowait(command)
 
     def _apply_sidecar_status(self, info: Dict[str, Any]) -> None:
+        message = str(info.get("message", "") or "")
+        last_frame_age_ms = info.get("last_frame_age_ms", None)
+        status_signature = (
+            bool(info.get("connected", False)),
+            int(round(float(info.get("rx_fps", info.get("fps", 0.0)) or 0.0))),
+            int(info.get("dropped_frames", 0) or 0),
+            int(info.get("queue_overwrite_count", 0) or 0),
+            str(info.get("resolution", "N/A") or "N/A"),
+            str(info.get("subscription_mode", self._vision_subscription_mode) or self._vision_subscription_mode),
+            bool(info.get("depth_subscribed", False)),
+            bool(info.get("info_subscribed", False)),
+            None if last_frame_age_ms is None else int(float(last_frame_age_ms) // 500),
+            message,
+        )
         with self._vision_lock:
             self._vision_connected = bool(info.get("connected", False))
             self._vision_fps = float(info.get("rx_fps", info.get("fps", 0.0)) or 0.0)
@@ -781,18 +894,26 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_depth_subscription_enabled = bool(info.get("depth_subscribed", False))
             self._vision_info_subscription_enabled = bool(info.get("info_subscribed", False))
             self._vision_status_emit_ts = time.time()
+        if status_signature == self._last_sidecar_status_signature:
+            return
+        self._last_sidecar_status_signature = status_signature
         self.vision_status.emit(info)
 
     def _ingest_sidecar_frame_payload(self, payload: Dict[str, Any]) -> None:
         image = payload.get("color_image")
         if image is None:
+            image = _read_ndarray_from_shared_memory(self._vision_sidecar_color_shm, shape=payload.get("color_shape"), dtype=payload.get("color_dtype", np.uint8))
+        if image is None:
             return
+        depth_image = payload.get("depth_image")
+        if depth_image is None and payload.get("depth_shape") is not None:
+            depth_image = _read_ndarray_from_shared_memory(self._vision_sidecar_depth_shm, shape=payload.get("depth_shape"), dtype=payload.get("depth_dtype", np.uint16))
         now = time.time()
         color_qimage = _rgb_array_to_qimage(image)
         emit_frame = Ros2CameraFrame(
             timestamp=float(payload.get("timestamp", now) or now),
             color_image=image,
-            depth_image=payload.get("depth_image"),
+            depth_image=depth_image,
             intrinsics=dict(payload.get("intrinsics") or {}),
             color_qimage=color_qimage,
         )
@@ -862,6 +983,7 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_queue_overwrite_count = 0
         self._vision_latest_frame_seq = 0
         self._vision_consumed_frame_seq = 0
+        self._last_sidecar_status_signature = None
 
     def request_vision_connect(self) -> None:
         if not self.vision_enabled:

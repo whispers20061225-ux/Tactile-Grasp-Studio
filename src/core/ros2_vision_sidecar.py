@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import queue
+import struct
 import time
+from multiprocessing import shared_memory
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -31,6 +33,9 @@ except Exception as exc:  # pragma: no cover - runtime dependency
     Image = None
     CameraInfo = None
     ROS2_IMPORT_ERROR = exc
+
+
+_VISION_SHM_HEADER_SIZE = 8
 
 
 def _safe_put_latest(target_queue, item: Any) -> bool:
@@ -131,6 +136,10 @@ class _VisionSidecarNode(Node):
         frame_queue,
         status_queue,
         error_queue,
+        color_shm_name: str,
+        color_shm_bytes: int,
+        depth_shm_name: str,
+        depth_shm_bytes: int,
     ):
         super().__init__("programme_vision_sidecar")
         self.color_topic = color_topic
@@ -142,6 +151,10 @@ class _VisionSidecarNode(Node):
         self.frame_queue = frame_queue
         self.status_queue = status_queue
         self.error_queue = error_queue
+        self._color_shm = shared_memory.SharedMemory(name=str(color_shm_name))
+        self._color_shm_bytes = int(color_shm_bytes)
+        self._depth_shm = shared_memory.SharedMemory(name=str(depth_shm_name))
+        self._depth_shm_bytes = int(depth_shm_bytes)
 
         self._vision_stream_requested = False
         self._vision_connected = False
@@ -150,6 +163,8 @@ class _VisionSidecarNode(Node):
         self._vision_last_color_ts = 0.0
         self._vision_last_depth_ts = 0.0
         self._vision_latest_depth: Optional[np.ndarray] = None
+        self._vision_latest_depth_shape = None
+        self._vision_latest_depth_dtype = None
         self._vision_intrinsics: Dict[str, float] = {}
         self._vision_device_info = "ROS2 camera stream"
         self._vision_resolution = "N/A"
@@ -177,6 +192,8 @@ class _VisionSidecarNode(Node):
         self._vision_color_sub = None
         self._vision_depth_sub = None
         self._vision_info_sub = None
+        self._vision_status_interval_sec = 1.0
+        self._last_status_signature = None
 
     def _initial_vision_reliability(self, mode: str):
         if mode == "best_effort":
@@ -284,12 +301,15 @@ class _VisionSidecarNode(Node):
         self._vision_last_color_ts = 0.0
         self._vision_last_depth_ts = 0.0
         self._vision_latest_depth = None
+        self._vision_latest_depth_shape = None
+        self._vision_latest_depth_dtype = None
         self._vision_color_count = 0
         self._vision_prev_color_count = 0
         self._vision_prev_status_ts = 0.0
         self._vision_fps = 0.0
         self._vision_dropped_frames = 0
         self._vision_queue_overwrite_count = 0
+        self._last_status_signature = None
         self._reset_auto_qos_probe(now)
         self._update_transport_plan()
         self._emit_status(now=now, force=True, message="Waiting for ROS2 camera frames...")
@@ -299,6 +319,8 @@ class _VisionSidecarNode(Node):
         self._vision_stream_requested = False
         self._vision_connected = False
         self._vision_latest_depth = None
+        self._vision_latest_depth_shape = None
+        self._vision_latest_depth_dtype = None
         self._vision_fps = 0.0
         self._vision_dropped_frames = 0
         self._vision_queue_overwrite_count = 0
@@ -309,6 +331,7 @@ class _VisionSidecarNode(Node):
         self._vision_last_depth_ts = 0.0
         self._vision_auto_qos_probe_active = False
         self._vision_auto_qos_probe_deadline_ts = 0.0
+        self._last_status_signature = None
         self._update_transport_plan()
         self._emit_status(now=now, force=True, message="ROS2 vision stream disconnected")
 
@@ -324,6 +347,8 @@ class _VisionSidecarNode(Node):
         self._vision_last_depth_decode_ts = 0.0
         if self._vision_depth_target_fps <= 0.0:
             self._vision_latest_depth = None
+            self._vision_latest_depth_shape = None
+            self._vision_latest_depth_dtype = None
             self._vision_last_depth_ts = 0.0
         self._update_transport_plan()
         self.get_logger().info(
@@ -403,6 +428,25 @@ class _VisionSidecarNode(Node):
 
         self._emit_status(now=now, force=False)
 
+    def _write_array_to_shared_memory(self, shm_obj, capacity: int, arr: np.ndarray) -> np.ndarray:
+        contiguous = np.require(arr, requirements=["C"])
+        byte_count = int(contiguous.nbytes)
+        if byte_count <= 0 or byte_count > int(capacity):
+            raise ValueError(f"shared memory capacity exceeded: need={byte_count}, capacity={capacity}")
+        view = shm_obj.buf
+        current_version = struct.unpack_from("<Q", view, 0)[0]
+        struct.pack_into("<Q", view, 0, current_version + 1)
+        view[_VISION_SHM_HEADER_SIZE:_VISION_SHM_HEADER_SIZE + byte_count] = memoryview(contiguous).cast("B")
+        struct.pack_into("<Q", view, 0, current_version + 2)
+        return contiguous
+
+    def close_shared_memory(self) -> None:
+        for shm_obj in (self._color_shm, self._depth_shm):
+            try:
+                shm_obj.close()
+            except Exception:
+                pass
+
     def _on_color(self, msg: Any) -> None:
         try:
             now = time.time()
@@ -417,6 +461,7 @@ class _VisionSidecarNode(Node):
                 self._vision_auto_qos_probe_active = False
                 self._vision_auto_qos_probe_deadline_ts = 0.0
 
+            image = self._write_array_to_shared_memory(self._color_shm, self._color_shm_bytes, image)
             h, w = image.shape[:2]
             self._vision_resolution = f"{w}x{h}"
             if (now - self._vision_last_emit_ts) < (1.0 / self.vision_max_fps):
@@ -426,10 +471,13 @@ class _VisionSidecarNode(Node):
             self._vision_last_emit_ts = now
             payload = {
                 "timestamp": frame_ts if frame_ts > 0 else now,
-                "color_image": image,
-                "depth_image": self._vision_latest_depth,
+                "color_shape": tuple(int(v) for v in image.shape),
+                "color_dtype": str(image.dtype),
                 "intrinsics": dict(self._vision_intrinsics),
             }
+            if self._vision_latest_depth_shape is not None and self._vision_latest_depth_dtype is not None:
+                payload["depth_shape"] = tuple(int(v) for v in self._vision_latest_depth_shape)
+                payload["depth_dtype"] = str(self._vision_latest_depth_dtype)
             if _safe_put_latest(self.frame_queue, payload):
                 self._vision_queue_overwrite_count += 1
             self._vision_connected = True
@@ -452,7 +500,10 @@ class _VisionSidecarNode(Node):
                 return
             if depth.ndim == 3:
                 depth = depth[:, :, 0]
-            self._vision_latest_depth = depth
+            depth = self._write_array_to_shared_memory(self._depth_shm, self._depth_shm_bytes, depth)
+            self._vision_latest_depth = None
+            self._vision_latest_depth_shape = tuple(int(v) for v in depth.shape)
+            self._vision_latest_depth_dtype = str(depth.dtype)
             self._vision_last_depth_ts = now
             self._vision_last_depth_decode_ts = now
         except Exception as exc:
@@ -486,9 +537,6 @@ class _VisionSidecarNode(Node):
             self._emit_error("vision_info_parse_error", exc)
 
     def _emit_status(self, *, now: float, force: bool, message: str = "") -> None:
-        if not force and (now - self._vision_status_emit_ts) < 0.5:
-            return
-
         elapsed = now - self._vision_prev_status_ts if self._vision_prev_status_ts > 0 else 0.0
         if elapsed > 0:
             frame_delta = self._vision_color_count - self._vision_prev_color_count
@@ -500,7 +548,6 @@ class _VisionSidecarNode(Node):
 
         self._vision_prev_color_count = self._vision_color_count
         self._vision_prev_status_ts = now
-        self._vision_status_emit_ts = now
 
         color_fresh = self._vision_last_color_ts > 0.0 and (now - self._vision_last_color_ts) <= self.vision_stale_timeout_sec
         connected = bool(self._vision_stream_requested and color_fresh)
@@ -532,6 +579,22 @@ class _VisionSidecarNode(Node):
             "info_subscribed": bool(self._vision_info_subscription_enabled),
             "message": message or ("ROS2 camera stream active" if connected else "ROS2 camera stream waiting"),
         }
+        status_signature = (
+            bool(status["connected"]),
+            int(round(status["rx_fps"])),
+            int(status["dropped_frames"]),
+            int(status["queue_overwrite_count"]),
+            str(status["resolution"]),
+            str(status["subscription_mode"]),
+            bool(status["depth_subscribed"]),
+            bool(status["info_subscribed"]),
+            None if last_frame_age_ms is None else int(float(last_frame_age_ms) // 500),
+            str(status["message"]),
+        )
+        if not force and status_signature == self._last_status_signature and (now - self._vision_status_emit_ts) < self._vision_status_interval_sec:
+            return
+        self._last_status_signature = status_signature
+        self._vision_status_emit_ts = now
         _safe_put_latest(self.status_queue, status)
 
     def _emit_error(self, key: str, exc: Exception) -> None:
@@ -573,6 +636,10 @@ def run_vision_sidecar(*, config: Dict[str, Any], command_queue, frame_queue, st
             frame_queue=frame_queue,
             status_queue=status_queue,
             error_queue=error_queue,
+            color_shm_name=str(config["color_shm_name"]),
+            color_shm_bytes=int(config["color_shm_bytes"]),
+            depth_shm_name=str(config["depth_shm_name"]),
+            depth_shm_bytes=int(config["depth_shm_bytes"]),
         )
         executor = SingleThreadedExecutor()
         executor.add_node(node)
@@ -599,6 +666,8 @@ def run_vision_sidecar(*, config: Dict[str, Any], command_queue, frame_queue, st
 
             try:
                 executor.spin_once(timeout_sec=0.02)
+            except KeyboardInterrupt:
+                break
             except RCLError as exc:
                 if not rclpy.ok():
                     break
@@ -606,6 +675,8 @@ def run_vision_sidecar(*, config: Dict[str, Any], command_queue, frame_queue, st
             except ExternalShutdownException:
                 break
             node.tick(time.time())
+    except KeyboardInterrupt:
+        pass
     except Exception as exc:
         logger.exception("ROS2 vision sidecar crashed")
         _safe_put_latest(error_queue, {"status": "vision_sidecar_error", "info": {"error": str(exc)}})
@@ -613,6 +684,11 @@ def run_vision_sidecar(*, config: Dict[str, Any], command_queue, frame_queue, st
         try:
             if executor is not None and node is not None:
                 executor.remove_node(node)
+        except Exception:
+            pass
+        try:
+            if node is not None:
+                node.close_shared_memory()
         except Exception:
             pass
         try:

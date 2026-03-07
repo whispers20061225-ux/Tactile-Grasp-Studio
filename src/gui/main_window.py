@@ -2968,6 +2968,12 @@ class MainWindow(QMainWindow):
 
             if self._is_ros2_vision_mode():
                 vision_connected = bool(self._ros2_vision_connected)
+                if (not vision_connected) and self._ros2_vision_last_frame_age_ms is not None:
+                    try:
+                        if float(self._ros2_vision_last_frame_age_ms) < 2000.0:
+                            vision_connected = True
+                    except Exception:
+                        pass
                 vision_simulation = bool(self._ros2_vision_simulation)
             else:
                 vision_connected = bool(self.camera_capture and getattr(self.camera_capture, "is_capturing", False))
