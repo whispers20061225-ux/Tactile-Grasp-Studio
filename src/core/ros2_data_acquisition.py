@@ -71,6 +71,11 @@ class _Ros2AcquisitionNode(Node):
     ):
         super().__init__("ros2_tactile_acquisition")
         self._owner = owner
+        self._vision_enabled = bool(vision_enabled)
+        self.color_topic = color_topic
+        self.depth_topic = depth_topic
+        self.camera_info_topic = camera_info_topic
+        self._vision_mode = str(vision_qos_mode or "auto").strip().lower()
 
         tactile_group = MutuallyExclusiveCallbackGroup() if MutuallyExclusiveCallbackGroup is not None else None
         health_group = MutuallyExclusiveCallbackGroup() if MutuallyExclusiveCallbackGroup is not None else None
@@ -81,19 +86,6 @@ class _Ros2AcquisitionNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=20,
         )
-        mode = str(vision_qos_mode or "auto").strip().lower()
-        vision_reliability = self._resolve_vision_reliability(
-            mode=mode,
-            color_topic=color_topic,
-            depth_topic=depth_topic,
-            camera_info_topic=camera_info_topic,
-        )
-        # Vision path only needs newest frame; keep queue depth=1 to reduce backlog/latency.
-        vision_qos = QoSProfile(
-            reliability=vision_reliability,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-        )
         health_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
@@ -102,58 +94,132 @@ class _Ros2AcquisitionNode(Node):
 
         tactile_kwargs = {"callback_group": tactile_group} if tactile_group is not None else {}
         health_kwargs = {"callback_group": health_group} if health_group is not None else {}
-        vision_kwargs = {"callback_group": vision_group} if vision_group is not None else {}
+        self._vision_kwargs = {"callback_group": vision_group} if vision_group is not None else {}
 
         self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos, **tactile_kwargs)
         self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos, **health_kwargs)
-        if vision_enabled:
-            self.get_logger().info(
-                f"Vision QoS resolved: requested={mode} effective={self._reliability_label(vision_reliability)}"
-            )
-            self.create_subscription(Image, color_topic, self._on_color, vision_qos, **vision_kwargs)
-            self.create_subscription(Image, depth_topic, self._on_depth, vision_qos, **vision_kwargs)
-            self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, vision_qos, **vision_kwargs)
 
-    def _resolve_vision_reliability(
-        self,
-        *,
-        mode: str,
-        color_topic: str,
-        depth_topic: str,
-        camera_info_topic: str,
-    ):
-        if mode == "reliable":
-            return ReliabilityPolicy.RELIABLE
+        self._vision_reliability = self._initial_vision_reliability(self._vision_mode)
+        self._vision_color_sub = None
+        self._vision_depth_sub = None
+        self._vision_info_sub = None
+        self._vision_color_enabled = False
+        self._vision_depth_enabled = False
+        self._vision_info_enabled = False
+
+    def _initial_vision_reliability(self, mode: str):
         if mode == "best_effort":
             return ReliabilityPolicy.BEST_EFFORT
+        return ReliabilityPolicy.RELIABLE
 
-        saw_reliable = False
-        for topic in (color_topic, depth_topic, camera_info_topic):
-            topic_infos = self._get_publishers_info(topic)
-            for info in topic_infos:
-                qos_profile = getattr(info, "qos_profile", None)
-                reliability = getattr(qos_profile, "reliability", None)
-                if self._reliability_matches(reliability, ReliabilityPolicy.BEST_EFFORT):
-                    return ReliabilityPolicy.BEST_EFFORT
-                if self._reliability_matches(reliability, ReliabilityPolicy.RELIABLE):
-                    saw_reliable = True
+    def _make_vision_qos(self, reliability=None):
+        effective = reliability if reliability is not None else self._vision_reliability
+        return QoSProfile(
+            reliability=effective,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
 
-        if saw_reliable:
-            return ReliabilityPolicy.RELIABLE
+    def configure_vision_transport(
+        self,
+        *,
+        color_enabled: bool,
+        depth_enabled: bool,
+        info_enabled: bool,
+        reliability=None,
+        log_change: bool = True,
+    ) -> str:
+        if not self._vision_enabled:
+            return "disabled"
 
-        # Compatibility-first fallback when publisher QoS cannot be introspected yet.
-        return ReliabilityPolicy.BEST_EFFORT
+        color_enabled = bool(color_enabled)
+        depth_enabled = bool(depth_enabled)
+        info_enabled = bool(info_enabled)
+        desired_reliability = reliability if reliability is not None else self._vision_reliability
+        qos_changed = not self._reliability_matches(self._vision_reliability, desired_reliability)
+        self._vision_reliability = desired_reliability
+        qos = self._make_vision_qos(self._vision_reliability)
 
-    def _get_publishers_info(self, topic: str):
+        self._reconcile_vision_subscription(
+            attr_name="_vision_color_sub",
+            enabled=color_enabled,
+            msg_type=Image,
+            topic=self.color_topic,
+            callback=self._on_color,
+            qos=qos,
+            recreate=qos_changed,
+        )
+        self._reconcile_vision_subscription(
+            attr_name="_vision_depth_sub",
+            enabled=depth_enabled,
+            msg_type=Image,
+            topic=self.depth_topic,
+            callback=self._on_depth,
+            qos=qos,
+            recreate=qos_changed,
+        )
+        self._reconcile_vision_subscription(
+            attr_name="_vision_info_sub",
+            enabled=info_enabled,
+            msg_type=CameraInfo,
+            topic=self.camera_info_topic,
+            callback=self._on_camera_info,
+            qos=qos,
+            recreate=qos_changed,
+        )
+
+        changed = (
+            qos_changed
+            or color_enabled != self._vision_color_enabled
+            or depth_enabled != self._vision_depth_enabled
+            or info_enabled != self._vision_info_enabled
+        )
+        self._vision_color_enabled = color_enabled
+        self._vision_depth_enabled = depth_enabled
+        self._vision_info_enabled = info_enabled
+
+        label = self._reliability_label(self._vision_reliability)
+        if changed and log_change:
+            self.get_logger().info(
+                f"Vision transport reconfigured: qos={label} color={color_enabled} depth={depth_enabled} info={info_enabled}"
+            )
+        return label
+
+    def _reconcile_vision_subscription(
+        self,
+        *,
+        attr_name: str,
+        enabled: bool,
+        msg_type,
+        topic: str,
+        callback,
+        qos,
+        recreate: bool,
+    ) -> None:
+        sub = getattr(self, attr_name, None)
+        if recreate and sub is not None:
+            self._destroy_vision_subscription(attr_name)
+            sub = None
+        if enabled:
+            if sub is None:
+                setattr(
+                    self,
+                    attr_name,
+                    self.create_subscription(msg_type, topic, callback, qos, **self._vision_kwargs),
+                )
+        else:
+            if sub is not None:
+                self._destroy_vision_subscription(attr_name)
+
+    def _destroy_vision_subscription(self, attr_name: str) -> None:
+        sub = getattr(self, attr_name, None)
+        if sub is None:
+            return
         try:
-            return list(self.get_publishers_info_by_topic(topic))
-        except TypeError:
-            try:
-                return list(self.get_publishers_info_by_topic(topic, False))
-            except Exception:
-                return []
+            self.destroy_subscription(sub)
         except Exception:
-            return []
+            pass
+        setattr(self, attr_name, None)
 
     @staticmethod
     def _reliability_matches(value, expected_policy) -> bool:
@@ -271,6 +337,14 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_depth_profile = "off"
         self._vision_depth_target_fps = 0.0
         self._vision_last_depth_decode_ts = 0.0
+        self._vision_color_subscription_enabled = False
+        self._vision_depth_subscription_enabled = False
+        self._vision_info_subscription_enabled = False
+        self._vision_transport_dirty = False
+        self._vision_subscription_mode = self.vision_qos_mode if self.vision_qos_mode in ("reliable", "best_effort") else "reliable"
+        self._vision_auto_qos_probe_active = False
+        self._vision_auto_qos_probe_deadline_ts = 0.0
+        self._vision_auto_qos_probe_color_count = 0
         self._vision_color_count = 0
         self._vision_prev_color_count = 0
         self._vision_prev_status_ts = 0.0
@@ -350,6 +424,7 @@ class Ros2DataAcquisitionThread(QThread):
                     raise exc
 
                 now = time.time()
+                self._apply_vision_transport_updates(now)
                 if now - self._status_emit_ts >= self._status_emit_interval_sec:
                     self._status_emit_ts = now
                     self.status_changed.emit(
@@ -473,6 +548,100 @@ class Ros2DataAcquisitionThread(QThread):
         except Exception:
             pass
 
+    def _compute_vision_transport_plan_locked(self):
+        color_enabled = bool(self._vision_stream_requested)
+        depth_enabled = bool(color_enabled and self._vision_depth_target_fps > 0.0)
+        info_enabled = bool(color_enabled and ((not self._vision_intrinsics) or depth_enabled))
+        return color_enabled, depth_enabled, info_enabled
+
+    def _reset_auto_vision_qos_probe_locked(self, now: float) -> None:
+        mode = self.vision_qos_mode
+        if mode == "best_effort":
+            self._vision_subscription_mode = "best_effort"
+            self._vision_auto_qos_probe_active = False
+            self._vision_auto_qos_probe_deadline_ts = 0.0
+            self._vision_auto_qos_probe_color_count = self._vision_color_count
+            return
+        self._vision_subscription_mode = "reliable"
+        if mode == "auto":
+            self._vision_auto_qos_probe_active = True
+            self._vision_auto_qos_probe_deadline_ts = now + 2.5
+            self._vision_auto_qos_probe_color_count = self._vision_color_count
+        else:
+            self._vision_auto_qos_probe_active = False
+            self._vision_auto_qos_probe_deadline_ts = 0.0
+            self._vision_auto_qos_probe_color_count = self._vision_color_count
+
+    def _update_vision_transport_plan_locked(self, now: float, *, reset_qos_probe: bool) -> None:
+        if reset_qos_probe:
+            self._reset_auto_vision_qos_probe_locked(now)
+        color_enabled, depth_enabled, info_enabled = self._compute_vision_transport_plan_locked()
+        changed = (
+            color_enabled != self._vision_color_subscription_enabled
+            or depth_enabled != self._vision_depth_subscription_enabled
+            or info_enabled != self._vision_info_subscription_enabled
+        )
+        self._vision_color_subscription_enabled = color_enabled
+        self._vision_depth_subscription_enabled = depth_enabled
+        self._vision_info_subscription_enabled = info_enabled
+        if changed or reset_qos_probe:
+            self._vision_transport_dirty = True
+
+    def _apply_vision_transport_updates(self, now: float) -> None:
+        if not self.vision_enabled or self._node is None:
+            return
+
+        fallback_triggered = False
+        with self._vision_lock:
+            if (
+                self.vision_qos_mode == "auto"
+                and self._vision_stream_requested
+                and self._vision_auto_qos_probe_active
+                and now >= self._vision_auto_qos_probe_deadline_ts
+                and self._vision_color_count <= self._vision_auto_qos_probe_color_count
+                and self._vision_subscription_mode != "best_effort"
+            ):
+                self._vision_subscription_mode = "best_effort"
+                self._vision_auto_qos_probe_active = False
+                self._vision_auto_qos_probe_deadline_ts = 0.0
+                self._vision_transport_dirty = True
+                fallback_triggered = True
+
+            if not self._vision_transport_dirty:
+                return
+
+            color_enabled = self._vision_color_subscription_enabled
+            depth_enabled = self._vision_depth_subscription_enabled
+            info_enabled = self._vision_info_subscription_enabled
+            subscription_mode = self._vision_subscription_mode
+            self._vision_transport_dirty = False
+
+        if fallback_triggered:
+            self.logger.warning(
+                "ROS2 vision QoS fallback: reliable subscription produced no color frames, switching to best_effort"
+            )
+
+        reliability = (
+            ReliabilityPolicy.RELIABLE if subscription_mode == "reliable" else ReliabilityPolicy.BEST_EFFORT
+        )
+        try:
+            effective_label = self._node.configure_vision_transport(
+                color_enabled=color_enabled,
+                depth_enabled=depth_enabled,
+                info_enabled=info_enabled,
+                reliability=reliability,
+                log_change=True,
+            )
+        except Exception as exc:
+            with self._vision_lock:
+                self._vision_transport_dirty = True
+            self.error_count += 1
+            self._emit_vision_error_throttled("vision_transport_reconfigure_error", exc)
+            return
+
+        with self._vision_lock:
+            self._vision_subscription_mode = effective_label
+
     def request_vision_connect(self) -> None:
         if not self.vision_enabled:
             self.vision_status.emit(
@@ -485,15 +654,28 @@ class Ros2DataAcquisitionThread(QThread):
             )
             return
         with self._vision_lock:
+            now = time.time()
             self._vision_stream_requested = True
             self._vision_connected = False
             self._vision_status_emit_ts = 0.0
+            self._vision_last_emit_ts = 0.0
+            self._vision_last_color_ts = 0.0
+            self._vision_last_depth_ts = 0.0
+            self._vision_latest_color = None
+            self._vision_latest_depth = None
+            self._vision_latest_frame = None
+            self._vision_color_count = 0
+            self._vision_prev_color_count = 0
+            self._vision_prev_status_ts = 0.0
+            self._vision_fps = 0.0
             self._vision_dropped_frames = 0
             self._vision_queue_overwrite_count = 0
+            self._update_vision_transport_plan_locked(now, reset_qos_probe=True)
         self._emit_vision_status(now=time.time(), force=True, message="Waiting for ROS2 camera frames...")
 
     def request_vision_disconnect(self) -> None:
         with self._vision_lock:
+            now = time.time()
             self._vision_stream_requested = False
             self._vision_connected = False
             self._vision_latest_color = None
@@ -507,6 +689,9 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_depth_target_fps = 0.0
             self._vision_last_depth_decode_ts = 0.0
             self._vision_last_depth_ts = 0.0
+            self._vision_auto_qos_probe_active = False
+            self._vision_auto_qos_probe_deadline_ts = 0.0
+            self._update_vision_transport_plan_locked(now, reset_qos_probe=False)
         self.vision_status.emit(
             {
                 "connected": False,
@@ -522,6 +707,9 @@ class Ros2DataAcquisitionThread(QThread):
                 "message": "ROS2 vision stream disconnected",
                 "simulation": False,
                 "device_info": self._vision_device_info,
+                "subscription_mode": self._vision_subscription_mode,
+                "depth_subscribed": False,
+                "info_subscribed": False,
             }
         )
 
@@ -544,6 +732,7 @@ class Ros2DataAcquisitionThread(QThread):
             if self._vision_depth_target_fps <= 0.0:
                 self._vision_latest_depth = None
                 self._vision_last_depth_ts = 0.0
+            self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
         self.logger.info("ROS2 vision depth profile: %s (target_fps=%.1f)", profile_key, depth_fps_map[profile_key])
 
     def ingest_vision_color(self, msg: Any) -> None:
@@ -564,6 +753,9 @@ class Ros2DataAcquisitionThread(QThread):
                 self._vision_latest_color = image
                 self._vision_last_color_ts = now
                 self._vision_color_count += 1
+                if self._vision_auto_qos_probe_active and self._vision_color_count > self._vision_auto_qos_probe_color_count:
+                    self._vision_auto_qos_probe_active = False
+                    self._vision_auto_qos_probe_deadline_ts = 0.0
                 h, w = image.shape[:2]
                 self._vision_resolution = f"{w}x{h}"
                 if (now - self._vision_last_emit_ts) >= (1.0 / self.vision_max_fps):
@@ -644,11 +836,18 @@ class Ros2DataAcquisitionThread(QThread):
             else:
                 intrinsics = {}
             frame_id = str(getattr(getattr(msg, "header", None), "frame_id", "") or "")
+            reconfigure_needed = False
             with self._vision_lock:
                 if intrinsics:
+                    had_intrinsics = bool(self._vision_intrinsics)
                     self._vision_intrinsics = intrinsics
+                    if not had_intrinsics and self._vision_depth_target_fps <= 0.0:
+                        self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
+                        reconfigure_needed = True
                 if frame_id:
                     self._vision_device_info = f"ROS2 frame: {frame_id}"
+            if reconfigure_needed:
+                self._apply_vision_transport_updates(time.time())
             self._emit_vision_status(now=time.time(), force=False)
         except Exception as exc:
             self.error_count += 1
@@ -795,6 +994,9 @@ class Ros2DataAcquisitionThread(QThread):
                 "depth_topic": self.depth_topic,
                 "device_info": self._vision_device_info,
                 "depth_ready": depth_fresh,
+                "subscription_mode": self._vision_subscription_mode,
+                "depth_subscribed": bool(self._vision_depth_subscription_enabled),
+                "info_subscribed": bool(self._vision_info_subscription_enabled),
                 "message": message or ("ROS2 camera stream active" if connected else "ROS2 camera stream waiting"),
             }
         self.vision_status.emit(status)
@@ -863,6 +1065,9 @@ class Ros2DataAcquisitionThread(QThread):
                 "dropped_frames": self._vision_dropped_frames,
                 "queue_overwrite_count": self._vision_queue_overwrite_count,
                 "resolution": self._vision_resolution,
+                "subscription_mode": self._vision_subscription_mode,
+                "depth_subscribed": self._vision_depth_subscription_enabled,
+                "info_subscribed": self._vision_info_subscription_enabled,
             },
         }
 

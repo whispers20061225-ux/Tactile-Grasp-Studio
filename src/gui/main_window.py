@@ -480,6 +480,7 @@ class MainWindow(QMainWindow):
             self._handle_disconnect_camera()
             try:
                 self.data_acquisition_thread.request_vision_connect()
+                self._sync_vision_depth_profile()
                 if self.vision_viewer:
                     self.vision_viewer.update_camera_status(
                         connected=False,
