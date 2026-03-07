@@ -473,6 +473,8 @@ class Ros2DataAcquisitionThread(QThread):
             self._executor.add_node(self._node)
             if self._vision_sidecar_enabled:
                 self._start_vision_sidecar()
+            if self.vision_enabled:
+                self.request_vision_connect()
 
             self.status_changed.emit(
                 "running",
@@ -862,12 +864,37 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_sidecar_ctx = None
         self._last_sidecar_status_signature = None
 
-    def _send_vision_sidecar_command(self, action: str, **payload: Any) -> None:
+    def _send_vision_sidecar_command(self, action: str, **payload: Any) -> bool:
         if not self._vision_sidecar_enabled or self._vision_sidecar_command_queue is None:
-            return
+            return False
         command = {"action": action}
         command.update(payload)
-        self._vision_sidecar_command_queue.put_nowait(command)
+        queue_obj = self._vision_sidecar_command_queue
+        try:
+            queue_obj.put_nowait(command)
+            return True
+        except queue.Full:
+            replaced = False
+            while True:
+                try:
+                    queue_obj.get_nowait()
+                    replaced = True
+                except queue.Empty:
+                    break
+                try:
+                    queue_obj.put_nowait(command)
+                    if replaced:
+                        self.logger.warning(
+                            "Vision sidecar command queue saturated; replaced stale commands while sending %s",
+                            action,
+                        )
+                    return True
+                except queue.Full:
+                    continue
+            self.logger.warning("Vision sidecar command queue is saturated; dropped command: %s", action)
+        except (ValueError, OSError):
+            return False
+        return False
 
     def _apply_sidecar_status(self, info: Dict[str, Any]) -> None:
         message = str(info.get("message", "") or "")

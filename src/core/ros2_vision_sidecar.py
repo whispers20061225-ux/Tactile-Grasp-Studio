@@ -171,6 +171,9 @@ class _VisionSidecarNode(Node):
         self._vision_depth_profile = "off"
         self._vision_depth_target_fps = 0.0
         self._vision_last_depth_decode_ts = 0.0
+        self._vision_color_requested = False
+        self._vision_depth_requested = False
+        self._vision_info_requested = False
         self._vision_color_subscription_enabled = False
         self._vision_depth_subscription_enabled = False
         self._vision_info_subscription_enabled = False
@@ -383,15 +386,14 @@ class _VisionSidecarNode(Node):
 
     def _update_transport_plan(self) -> None:
         color_enabled, depth_enabled, info_enabled = self._compute_transport_plan()
-        changed = (
+        self._vision_color_requested = color_enabled
+        self._vision_depth_requested = depth_enabled
+        self._vision_info_requested = info_enabled
+        if (
             color_enabled != self._vision_color_subscription_enabled
             or depth_enabled != self._vision_depth_subscription_enabled
             or info_enabled != self._vision_info_subscription_enabled
-        )
-        self._vision_color_subscription_enabled = color_enabled
-        self._vision_depth_subscription_enabled = depth_enabled
-        self._vision_info_subscription_enabled = info_enabled
-        if changed:
+        ):
             self._vision_transport_dirty = True
 
     def tick(self, now: float) -> None:
@@ -419,9 +421,9 @@ class _VisionSidecarNode(Node):
             self._vision_transport_dirty = False
             reliability = ReliabilityPolicy.RELIABLE if self._vision_subscription_mode == "reliable" else ReliabilityPolicy.BEST_EFFORT
             self.configure_transport(
-                color_enabled=self._vision_color_subscription_enabled,
-                depth_enabled=self._vision_depth_subscription_enabled,
-                info_enabled=self._vision_info_subscription_enabled,
+                color_enabled=self._vision_color_requested,
+                depth_enabled=self._vision_depth_requested,
+                info_enabled=self._vision_info_requested,
                 reliability=reliability,
                 log_change=True,
             )
