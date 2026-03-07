@@ -1,3 +1,4 @@
+import os
 from glob import glob
 from pathlib import Path
 
@@ -5,9 +6,12 @@ from setuptools import find_packages, setup
 
 
 package_name = "tactile_sim"
-repo_root = Path(__file__).resolve().parents[3]
+package_root = Path(__file__).resolve().parent
+repo_root = package_root.parents[2]
 mesh_files = sorted(
-    str(path) for path in (repo_root / "models" / "meshes").glob("*") if path.is_file()
+    os.path.relpath(path, package_root)
+    for path in (repo_root / "models" / "meshes").glob("*")
+    if path.is_file()
 )
 
 setup(
