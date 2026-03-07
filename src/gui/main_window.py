@@ -646,20 +646,6 @@ class MainWindow(QMainWindow):
             self._depth_visual_last_task_ts = 0.0
             self.vision_viewer.update_image(None, "depth")
 
-        resolution = self._ros2_vision_resolution
-        if image is not None and hasattr(image, "shape") and len(image.shape) >= 2:
-            h, w = image.shape[:2]
-            resolution = f"{w}x{h}"
-        self.vision_viewer.update_camera_status(
-            connected=self._ros2_vision_connected or bool(image is not None),
-            streaming=self._ros2_vision_streaming or bool(image is not None),
-            resolution=resolution,
-            fps=self._ros2_vision_render_fps,
-            rx_fps=self._ros2_vision_rx_fps if self._ros2_vision_rx_fps > 0 else self._ros2_vision_fps,
-            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total + self._depth_visual_result_overwrite_total,
-            last_frame_age_ms=self._ros2_vision_last_frame_age_ms,
-            stall_count=self._ros2_vision_stall_count,
-        )
 
     def _update_camera_view(self):
         """????????????UI"""

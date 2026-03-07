@@ -582,6 +582,8 @@ class VisionViewer(QWidget):
             self._latest_rgb_qimage = None if image is None else rgb_array_to_qimage(image)
             self._refresh_rgb_views()
         elif image_type == "depth":
+            if image is None and self.depth_image is None:
+                return
             self.depth_image = image
             if self.show_depth_map:
                 self.depth_view.set_depth_frame(image)
