@@ -368,9 +368,7 @@ class _VisionSidecarNode(Node):
             self._vision_last_depth_ts = 0.0
         self._update_transport_plan()
         self.get_logger().info(
-            "ROS2 vision depth profile: %s (target_fps=%.1f)",
-            profile_key,
-            depth_fps_map[profile_key],
+            f"ROS2 vision depth profile: {profile_key} (target_fps={depth_fps_map[profile_key]:.1f})"
         )
 
     def _compute_transport_plan(self):
