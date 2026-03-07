@@ -5,7 +5,9 @@ param(
     [bool]$CleanConda = $true,
     [string]$PixiOpenSslBin = "",
     [bool]$WarmupRosGraph = $false,
-    [int]$RosDaemonCmdTimeoutSec = 8
+    [int]$RosDaemonCmdTimeoutSec = 8,
+    [string]$WindowsHostOnlyIp = "",
+    [string]$VmHostOnlyIp = ""
 )
 
 function Remove-CondaEntriesFromPath {
@@ -44,9 +46,8 @@ function Prepend-Path {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
-$ddsFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_windows.xml")).Path
+$ddsTemplateFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_windows.xml")).Path
 $ddsRuntimeFile = Join-Path $env:TEMP "programme_cyclonedds_windows.xml"
-Copy-Item -Path $ddsFile -Destination $ddsRuntimeFile -Force
 
 # Ensure native process stdout is decoded as UTF-8 in this shell.
 # This avoids garbled non-ASCII paths when sourcing colcon-generated setup scripts.
@@ -122,6 +123,137 @@ function Invoke-Ros2DaemonCommand {
     }
 }
 
+function Get-Ipv4Candidates {
+    $addresses = @()
+    try {
+        $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+                $_.IPAddress -and
+                $_.IPAddress -notmatch '^127\.' -and
+                $_.IPAddress -notmatch '^169\.254\.' -and
+                $_.IPAddress -notmatch '^0\.'
+            })
+    }
+    catch {
+        $addresses = @()
+    }
+    return $addresses
+}
+
+function Get-DefaultRouteInterfaceIndices {
+    try {
+        return @(
+            Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop |
+            Sort-Object -Property RouteMetric, InterfaceMetric |
+            Select-Object -ExpandProperty InterfaceIndex -Unique
+        )
+    }
+    catch {
+        return @()
+    }
+}
+
+function Resolve-WindowsHostOnlyIp {
+    param([string]$RequestedIp)
+
+    $candidates = @(Get-Ipv4Candidates)
+    if ($RequestedIp) {
+        if ($candidates.IPAddress -contains $RequestedIp) {
+            return $RequestedIp
+        }
+        Write-Warning "Requested WindowsHostOnlyIp $RequestedIp is not present on this host. Auto-detecting instead."
+    }
+
+    $adapterByIndex = @{}
+    try {
+        Get-NetAdapter -IncludeHidden -ErrorAction Stop | ForEach-Object {
+            $adapterByIndex[$_.ifIndex] = $_
+        }
+    }
+    catch {
+    }
+
+    $vmwareCandidates = @(
+        $candidates | Where-Object {
+            $adapter = $adapterByIndex[$_.InterfaceIndex]
+            $adapterName = if ($adapter) { "$($adapter.Name) $($adapter.InterfaceDescription)" } else { $_.InterfaceAlias }
+            $adapterName -match 'VMware|VMnet|Host-Only'
+        }
+    )
+    if ($vmwareCandidates.Count -gt 0) {
+        return ($vmwareCandidates | Select-Object -First 1).IPAddress
+    }
+
+    $defaultRouteIndices = @(Get-DefaultRouteInterfaceIndices)
+    $nonDefaultCandidates = @($candidates | Where-Object { $defaultRouteIndices -notcontains $_.InterfaceIndex })
+    if ($nonDefaultCandidates.Count -gt 0) {
+        return ($nonDefaultCandidates | Select-Object -First 1).IPAddress
+    }
+
+    if ($candidates.Count -gt 0) {
+        return ($candidates | Select-Object -First 1).IPAddress
+    }
+
+    throw "Failed to resolve a usable Windows IPv4 for CycloneDDS."
+}
+
+function Resolve-VmPeerIp {
+    param(
+        [string]$RequestedIp,
+        [string]$LocalIp
+    )
+
+    if ($RequestedIp) {
+        return $RequestedIp
+    }
+
+    if ($LocalIp -match '^(\d+)\.(\d+)\.(\d+)\.\d+$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3]).128"
+    }
+
+    return "192.168.147.128"
+}
+
+function Write-CycloneDDSRuntimeFile {
+    param(
+        [string]$RuntimeFile,
+        [string]$LocalIp,
+        [string]$PeerIp
+    )
+
+    $xml = @"
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface address="$LocalIp" />
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <MaxMessageSize>65500B</MaxMessageSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer Address="127.0.0.1" />
+        <Peer Address="$LocalIp" />
+        <Peer Address="$PeerIp" />
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+"@
+
+    [System.IO.File]::WriteAllText($RuntimeFile, $xml, [System.Text.UTF8Encoding]::new($false))
+}
+
+if (-not (Test-Path $ddsTemplateFile)) {
+    throw "CycloneDDS template not found: $ddsTemplateFile"
+}
+
+$resolvedWindowsHostOnlyIp = Resolve-WindowsHostOnlyIp -RequestedIp $WindowsHostOnlyIp
+$resolvedVmHostOnlyIp = Resolve-VmPeerIp -RequestedIp $VmHostOnlyIp -LocalIp $resolvedWindowsHostOnlyIp
+Write-CycloneDDSRuntimeFile -RuntimeFile $ddsRuntimeFile -LocalIp $resolvedWindowsHostOnlyIp -PeerIp $resolvedVmHostOnlyIp
+
 if ($CleanConda) {
     $env:PATH = Remove-CondaEntriesFromPath -PathValue $env:PATH
     foreach ($name in @(
@@ -167,6 +299,8 @@ $env:ROS_DOMAIN_ID = "$DomainId"
 $env:RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
 $env:ROS_AUTOMATIC_DISCOVERY_RANGE = "SUBNET"
 [System.Environment]::SetEnvironmentVariable("ROS_LOCALHOST_ONLY", $null, "Process")
+$env:PROGRAMME_WINDOWS_HOST_ONLY_IP = $resolvedWindowsHostOnlyIp
+$env:PROGRAMME_VM_HOST_ONLY_IP = $resolvedVmHostOnlyIp
 $env:CYCLONEDDS_URI = $ddsRuntimeFile
 
 if ($WarmupRosGraph -and (Get-Command ros2 -ErrorAction SilentlyContinue)) {
@@ -182,6 +316,8 @@ Write-Host "ROS2 Windows environment ready."
 Write-Host "ROS_DOMAIN_ID=$env:ROS_DOMAIN_ID"
 Write-Host "RMW_IMPLEMENTATION=$env:RMW_IMPLEMENTATION"
 Write-Host "CYCLONEDDS_URI=$env:CYCLONEDDS_URI"
+Write-Host "PROGRAMME_WINDOWS_HOST_ONLY_IP=$env:PROGRAMME_WINDOWS_HOST_ONLY_IP"
+Write-Host "PROGRAMME_VM_HOST_ONLY_IP=$env:PROGRAMME_VM_HOST_ONLY_IP"
 if ($CleanConda) {
     Write-Host "CONDA_CLEAN=enabled"
 }

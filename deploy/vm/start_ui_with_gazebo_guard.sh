@@ -186,6 +186,20 @@ dump_runtime_diagnostics() {
   tail -n 120 "${LAUNCH_LOG_FILE}" 2>/dev/null || true
 }
 
+launch_log_has_dds_interface_mismatch() {
+  [[ -f "${LAUNCH_LOG_FILE}" ]] && grep -Eq \
+    'does not match an available interface|rmw_create_node: failed to create domain' \
+    "${LAUNCH_LOG_FILE}"
+}
+
+report_dds_interface_mismatch() {
+  log_fail "CycloneDDS failed to bind a usable interface for this VM."
+  echo "[HINT] resolved VM DDS IP: ${PROGRAMME_VM_HOST_ONLY_IP:-unknown}" >&2
+  echo "[HINT] resolved Windows DDS peer IP: ${PROGRAMME_WINDOWS_HOST_ONLY_IP:-unknown}" >&2
+  echo "[HINT] override explicitly if needed:" >&2
+  echo "[HINT]   WINDOWS_HOST_ONLY_IP=<windows_ip> VM_HOST_ONLY_IP=<vm_ip> bash deploy/vm/start_ui_with_gazebo_guard.sh ..." >&2
+}
+
 cleanup_stale_gazebo_processes() {
   pkill -f "phase6_sim_gazebo.launch.py" >/dev/null 2>&1 || true
   pkill -f "gazebo_arm.launch.py" >/dev/null 2>&1 || true
@@ -360,6 +374,12 @@ fi
 log_ok "phase6_sim_gazebo.launch.py running (pid=${LAUNCH_PID})"
 echo "[INFO] launch log: ${LAUNCH_LOG_FILE}"
 
+if launch_log_has_dds_interface_mismatch; then
+  report_dds_interface_mismatch
+  dump_runtime_diagnostics
+  exit 1
+fi
+
 log_step "validating Gazebo-side core nodes"
 for node in \
   "/robot_state_publisher" \
@@ -369,6 +389,9 @@ for node in \
   "/demo_task_node" \
   "/tactile_ui_subscriber"; do
   if ! wait_for_node "${node}" "${LAUNCH_TIMEOUT_SEC}"; then
+    if launch_log_has_dds_interface_mismatch; then
+      report_dds_interface_mismatch
+    fi
     log_fail "required Gazebo node missing: ${node}"
     dump_runtime_diagnostics
     exit 1

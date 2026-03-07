@@ -32,9 +32,12 @@ Phase A only covers network + middleware validation. No business logic changes.
    - Set VM adapter 2 to Host-only (for example VMnet1).
 2. On Windows, run `ipconfig` and record the Host-only IPv4.
 3. On VM, run `ip a` and record the Host-only IPv4.
-4. Update DDS peer files:
-   - Windows file: set Windows address + VM peer address.
-   - VM file: set VM address + Windows peer address.
+4. DDS peer files are now generated at runtime by the env scripts:
+   - Windows env resolves the active VMware host-only IPv4 automatically.
+   - VM env resolves the active non-default IPv4 automatically.
+   - Optional overrides:
+     - Windows: `-WindowsHostOnlyIp <ip> -VmHostOnlyIp <ip>`
+     - VM: `WINDOWS_HOST_ONLY_IP=<ip> VM_HOST_ONLY_IP=<ip> source deploy/vm/env_ros2_vm.sh 0`
 
 ## Windows Commands (PowerShell)
 

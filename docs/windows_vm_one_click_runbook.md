@@ -104,9 +104,8 @@ bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogram
    - `python -m pip install pyrealsense2`
 3. Windows build reports missing `pkg_resources`:
    - `python -m pip install "setuptools<81"`
-4. VM one-click script exits after guard failure (`/tactile/raw` missing) while launch log shows nodes started:
-   - check `config/dds/cyclonedds_vm.xml`
-   - ensure VM local peers exist when `AllowMulticast=false`:
-     - `<Peer Address="127.0.0.1" />`
-     - `<Peer Address="<VM_HOST_ONLY_IP>" />`
-   - then rerun one-click script
+4. VM one-click script exits after guard failure and launch log shows `does not match an available interface`:
+   - the VM host-only IP changed and CycloneDDS picked a stale address
+   - rerun with explicit overrides if auto-detect picked the wrong NIC:
+     - `WINDOWS_HOST_ONLY_IP=<windows_ip> VM_HOST_ONLY_IP=<vm_ip> bash deploy/vm/start_ui_with_realsense_guard.sh ...`
+   - the env script now writes a runtime DDS file and should no longer require editing `config/dds/cyclonedds_vm.xml`
