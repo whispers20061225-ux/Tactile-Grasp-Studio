@@ -464,10 +464,6 @@ class _VisionSidecarNode(Node):
             image = self._write_array_to_shared_memory(self._color_shm, self._color_shm_bytes, image)
             h, w = image.shape[:2]
             self._vision_resolution = f"{w}x{h}"
-            if (now - self._vision_last_emit_ts) < (1.0 / self.vision_max_fps):
-                self._vision_dropped_frames += 1
-                return
-
             self._vision_last_emit_ts = now
             payload = {
                 "timestamp": frame_ts if frame_ts > 0 else now,
@@ -480,6 +476,7 @@ class _VisionSidecarNode(Node):
                 payload["depth_dtype"] = str(self._vision_latest_depth_dtype)
             if _safe_put_latest(self.frame_queue, payload):
                 self._vision_queue_overwrite_count += 1
+                self._vision_dropped_frames += 1
             self._vision_connected = True
         except Exception as exc:
             self._emit_error("vision_color_parse_error", exc)

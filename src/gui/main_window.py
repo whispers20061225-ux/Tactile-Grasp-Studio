@@ -137,6 +137,11 @@ class MainWindow(QMainWindow):
         # 数据缓冲区
         self.sensor_data_buffer = None
         self.force_data_buffer = None
+        self._last_tactile_data_ts = 0.0
+        self._runtime_servo_state = {"connected": False, "simulation": False}
+        self._runtime_sensor_state = {"connected": False, "simulation": False}
+        self._runtime_arm_state = {"connected": False, "simulation": False}
+        self._vision_display_only_mode = None
         
         # 可视化模式
         self.visualization_mode = "heatmap"  # heatmap, vector_field, 3d_view
@@ -603,11 +608,22 @@ class MainWindow(QMainWindow):
             self.camera_timer.stop()
 
     def _get_latest_camera_frame(self, timeout: float = 1.0) -> Optional[object]:
-        """获取最新相机帧，失败时抛出异常"""
+        """???????????????????????"""
         if self._is_ros2_vision_mode():
             frame = self._ros2_vision_latest_frame
+            if (frame is None or getattr(frame, "color_image", None) is None) and self.data_acquisition_thread is not None and hasattr(self.data_acquisition_thread, "get_latest_vision_source_frame"):
+                try:
+                    source_frame = self.data_acquisition_thread.get_latest_vision_source_frame()
+                    if source_frame is not None:
+                        if frame is not None and getattr(frame, "color_qimage", None) is not None and getattr(source_frame, "color_qimage", None) is None:
+                            source_frame.color_qimage = frame.color_qimage
+                        frame = source_frame
+                except Exception:
+                    pass
             if frame is None:
-                raise RuntimeError("尚未接收到 ROS2 相机数据")
+                raise RuntimeError("????????ROS2 ??????")
+            if getattr(frame, "color_image", None) is None and getattr(frame, "color_qimage", None) is None:
+                raise RuntimeError("ROS2 ??????????????")
             return frame
         if not self.camera_capture:
             raise RuntimeError("请先连接相机")
@@ -634,11 +650,10 @@ class MainWindow(QMainWindow):
         image = getattr(frame, "color_image", None)
         color_qimage = getattr(frame, "color_qimage", None)
         depth_image = getattr(frame, "depth_image", None)
-        if image is not None:
-            if color_qimage is not None and hasattr(self.vision_viewer, "update_rgb_qimage"):
-                self.vision_viewer.update_rgb_qimage(image, color_qimage)
-            else:
-                self.vision_viewer.update_image(image, "rgb")
+        if color_qimage is not None and hasattr(self.vision_viewer, "update_rgb_qimage"):
+            self.vision_viewer.update_rgb_qimage(image, color_qimage)
+        elif image is not None:
+            self.vision_viewer.update_image(image, "rgb")
         if depth_image is not None:
             if self._is_depth_view_active():
                 self._schedule_depth_visual_for_frame(frame)
@@ -696,9 +711,12 @@ class MainWindow(QMainWindow):
         frame_ts = float(getattr(frame, "timestamp", now) or now)
         self._ros2_vision_last_frame_age_ms = max(0.0, (now - frame_ts) * 1000.0)
         image = getattr(frame, "color_image", None)
+        color_qimage = getattr(frame, "color_qimage", None)
         if image is not None and hasattr(image, "shape") and len(image.shape) >= 2:
             height, width = image.shape[:2]
             self._ros2_vision_resolution = f"{width}x{height}"
+        elif color_qimage is not None and not color_qimage.isNull():
+            self._ros2_vision_resolution = f"{color_qimage.width()}x{color_qimage.height()}"
         if self._ros2_vision_prev_render_ts > 0.0:
             elapsed = now - self._ros2_vision_prev_render_ts
             if elapsed > 0.0:
@@ -850,6 +868,31 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _should_use_display_only_vision_delivery(self) -> bool:
+        if not self._is_ros2_vision_mode() or self.data_acquisition_thread is None:
+            return False
+        if self.vision_tab is None or self.tab_widget.currentWidget() is not self.vision_tab:
+            return False
+        if self._is_depth_view_active() or self._is_detection_analysis_view_active() or self._is_pointcloud_view_active():
+            return False
+        if self.auto_detect_enabled or self._manual_detection_requested or self._pointcloud_refresh_requested:
+            return False
+        return True
+
+    def _sync_vision_delivery_mode(self) -> None:
+        if not self._is_ros2_vision_mode():
+            return
+        if self.data_acquisition_thread is None or not hasattr(self.data_acquisition_thread, "set_vision_display_only"):
+            return
+        display_only = self._should_use_display_only_vision_delivery()
+        if display_only == self._vision_display_only_mode:
+            return
+        self._vision_display_only_mode = display_only
+        try:
+            self.data_acquisition_thread.set_vision_display_only(display_only)
+        except Exception:
+            pass
+
     def _schedule_pointcloud_for_frame(self, frame, *, force: bool) -> None:
         if frame is None or getattr(frame, "depth_image", None) is None:
             return
@@ -990,7 +1033,9 @@ class MainWindow(QMainWindow):
         analysis_backlog = self._analysis_worker.get_backlog_size()
         pointcloud_backlog = self._pointcloud_worker.get_backlog_size()
         reason = "gui_render_blocked"
-        if self._ros2_vision_last_frame_age_ms is not None and float(self._ros2_vision_last_frame_age_ms) > 1500.0:
+        stale_timeout_sec = float(getattr(self.data_acquisition_thread, "vision_stale_timeout_sec", 2.0) or 2.0) if self.data_acquisition_thread is not None else 2.0
+        upstream_frame_age_ms = max(1500.0, stale_timeout_sec * 1000.0 * 0.75)
+        if self._ros2_vision_last_frame_age_ms is not None and float(self._ros2_vision_last_frame_age_ms) > upstream_frame_age_ms:
             reason = "upstream_no_frame"
         elif depth_backlog > 1:
             reason = "depth_visual_backlog"
@@ -1036,6 +1081,7 @@ class MainWindow(QMainWindow):
         if not self._is_ros2_vision_mode():
             return
 
+        self._sync_vision_delivery_mode()
         self._sync_vision_depth_profile()
         pulled = self._pull_ros2_vision_frame()
         if pulled is not None:
@@ -2577,10 +2623,12 @@ class MainWindow(QMainWindow):
     def _handle_main_tab_changed(self, index: int) -> None:
         _ = index
         self._apply_ui_focus_mode()
+        self._sync_vision_delivery_mode()
         if self._is_vision_tab_selected():
             self._update_vision_status_widgets(force=True)
         if self._is_arm_tab_selected():
             self._apply_latest_arm_status_to_panel(force=True)
+
 
     def _apply_ui_focus_mode(self) -> None:
         vision_focus = self._is_vision_tab_selected()
@@ -2742,6 +2790,12 @@ class MainWindow(QMainWindow):
         处理传感器数据回调，控制更新频率
         """
         self.frame_count += 1
+        now = time.time()
+        self._last_tactile_data_ts = now
+        self._runtime_sensor_state = {
+            "connected": True,
+            "simulation": bool(self._runtime_sensor_state.get("simulation", False)),
+        }
 
         # 确保三维力数据为numpy数组，便于后续计算/打印shape
         if hasattr(data, 'force_vectors') and data.force_vectors is not None and not hasattr(data.force_vectors, 'shape'):
@@ -2762,7 +2816,6 @@ class MainWindow(QMainWindow):
             self.force_data_buffer = data
         
         # 更新控制面板
-        now = time.time()
         if (now - self._last_control_panel_data_ts) >= 1.0:
             self._last_control_panel_data_ts = now
             QTimer.singleShot(0, lambda: self.control_panel.update_data_display(data))
@@ -2862,6 +2915,7 @@ class MainWindow(QMainWindow):
             if status.endswith("disconnect_result"):
                 connected = False
                 simulation = False
+            self._runtime_servo_state = {"connected": connected, "simulation": simulation}
             self.control_panel.update_device_status(
                 stm32={"connected": connected, "simulation": simulation}
             )
@@ -2879,6 +2933,7 @@ class MainWindow(QMainWindow):
             if status.endswith("disconnect_result"):
                 connected = False
                 simulation = False
+            self._runtime_sensor_state = {"connected": connected, "simulation": simulation}
             self.control_panel.update_device_status(
                 tactile={"connected": connected, "simulation": simulation}
             )
@@ -2906,6 +2961,7 @@ class MainWindow(QMainWindow):
                 "connected": info.get("connected", False),
                 "simulation": info.get("connection_type") == "simulation",
             }
+            self._runtime_arm_state = dict(arm_device_state)
             merged_state = dict(self._last_control_panel_device_state or {})
             if merged_state.get("arm") != arm_device_state:
                 self.control_panel.update_device_status(arm=arm_device_state)
@@ -2943,19 +2999,23 @@ class MainWindow(QMainWindow):
         try:
             # 汇总硬件状态（STM32/触觉/机械臂/视觉）
             status = {}
-            # 优先从硬件接口读取真实连接状态，避免演示状态覆盖
-            if (
-                hasattr(self.demo_manager, "hardware_interface")
-                and self.demo_manager.hardware_interface is not None
-                and hasattr(self.demo_manager.hardware_interface, "get_status")
-            ):
-                status = self.demo_manager.hardware_interface.get_status() or {}
-            elif hasattr(self.demo_manager, "get_status"):
-                status = self.demo_manager.get_status() or {}
-
-            servo_status = status.get("servo", {})
-            sensor_status = status.get("sensor", {})
-            arm_status = status.get("arm", {})
+            vision_focus = self._is_vision_tab_selected()
+            servo_status = dict(self._runtime_servo_state or {})
+            sensor_status = dict(self._runtime_sensor_state or {})
+            arm_status = dict(self._runtime_arm_state or {})
+            if not vision_focus:
+                if (
+                    hasattr(self.demo_manager, "hardware_interface")
+                    and self.demo_manager.hardware_interface is not None
+                    and hasattr(self.demo_manager.hardware_interface, "get_status")
+                ):
+                    status = self.demo_manager.hardware_interface.get_status() or {}
+                elif hasattr(self.demo_manager, "get_status"):
+                    status = self.demo_manager.get_status() or {}
+                if status:
+                    servo_status = status.get("servo", servo_status) or servo_status
+                    sensor_status = status.get("sensor", sensor_status) or sensor_status
+                    arm_status = status.get("arm", arm_status) or arm_status
 
             stm32_connected = bool(servo_status.get("connected", False))
             stm32_simulation = bool(servo_status.get("simulation", False))
@@ -2966,11 +3026,16 @@ class MainWindow(QMainWindow):
             arm_connected = bool(arm_info.get("connected", False))
             arm_simulation = bool(arm_info.get("simulation", False)) or arm_info.get("connection_type") == "simulation"
 
+            now = time.time()
+            if self._last_tactile_data_ts > 0.0 and (now - self._last_tactile_data_ts) <= 2.5:
+                tactile_connected = True
+
             if self._is_ros2_vision_mode():
                 vision_connected = bool(self._ros2_vision_connected)
                 if (not vision_connected) and self._ros2_vision_last_frame_age_ms is not None:
                     try:
-                        if float(self._ros2_vision_last_frame_age_ms) < 2000.0:
+                        stale_timeout_sec = float(getattr(self.data_acquisition_thread, "vision_stale_timeout_sec", 2.0) or 2.0)
+                        if float(self._ros2_vision_last_frame_age_ms) < max(2000.0, stale_timeout_sec * 1500.0):
                             vision_connected = True
                     except Exception:
                         pass
@@ -2995,7 +3060,6 @@ class MainWindow(QMainWindow):
                 self._last_control_panel_device_state = device_state
 
             # Throttle missing-hardware warnings to reduce UI churn
-            now = time.time()
             if now - self._last_missing_log_time >= 15.0:
                 missing = []
                 if not stm32_connected:

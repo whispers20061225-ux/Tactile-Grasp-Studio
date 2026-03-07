@@ -1727,7 +1727,10 @@ class ForcePlotWidget(PlotWidget):
                 y_min = min(self.total_force_history)
                 y_max = max(self.total_force_history)
                 margin = max(10, (y_max - y_min) * 0.2)  # 增加边距
-                self.ax1.set_xlim(0, len(self.total_force_history)-1)
+                if len(self.total_force_history) > 1:
+                    self.ax1.set_xlim(0, len(self.total_force_history)-1)
+                else:
+                    self.ax1.set_xlim(-0.5, 0.5)
                 self.ax1.set_ylim(y_min - margin, y_max + margin)
             
             # 更新平均力图
@@ -1747,7 +1750,10 @@ class ForcePlotWidget(PlotWidget):
                     y_min = min(all_avg_data)
                     y_max = max(all_avg_data)
                     margin = max(2, (y_max - y_min) * 0.2)
-                    self.ax2.set_xlim(0, len(self.average_force_history)-1)
+                    if len(self.average_force_history) > 1:
+                        self.ax2.set_xlim(0, len(self.average_force_history)-1)
+                    else:
+                        self.ax2.set_xlim(-0.5, 0.5)
                     self.ax2.set_ylim(y_min - margin, y_max + margin)
             
             # 更新最大力图
@@ -1767,7 +1773,10 @@ class ForcePlotWidget(PlotWidget):
                     y_min = min(all_max_data)
                     y_max = max(all_max_data)
                     margin = max(10, (y_max - y_min) * 0.2)
-                    self.ax3.set_xlim(0, len(self.max_force_history)-1)
+                    if len(self.max_force_history) > 1:
+                        self.ax3.set_xlim(0, len(self.max_force_history)-1)
+                    else:
+                        self.ax3.set_xlim(-0.5, 0.5)
                     self.ax3.set_ylim(y_min - margin, y_max + margin)
             
             # 更新力分布图

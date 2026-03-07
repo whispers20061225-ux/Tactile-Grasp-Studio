@@ -430,6 +430,7 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_latest_frame: Optional[Ros2CameraFrame] = None
         self._vision_latest_frame_seq = 0
         self._vision_consumed_frame_seq = 0
+        self._vision_display_only = False
         self._vision_error_last_emit_ts: Dict[str, float] = {}
         self._ui_focus_mode = "default"
         self._tactile_ui_emit_interval_sec = 1.0 / 10.0
@@ -910,15 +911,17 @@ class Ros2DataAcquisitionThread(QThread):
             depth_image = _read_ndarray_from_shared_memory(self._vision_sidecar_depth_shm, shape=payload.get("depth_shape"), dtype=payload.get("depth_dtype", np.uint16))
         now = time.time()
         color_qimage = _rgb_array_to_qimage(image)
+        with self._vision_lock:
+            display_only = bool(self._vision_display_only and depth_image is None)
         emit_frame = Ros2CameraFrame(
             timestamp=float(payload.get("timestamp", now) or now),
-            color_image=image,
+            color_image=None if display_only else image,
             depth_image=depth_image,
             intrinsics=dict(payload.get("intrinsics") or {}),
             color_qimage=color_qimage,
         )
         with self._vision_lock:
-            self._vision_latest_color = emit_frame.color_image
+            self._vision_latest_color = image
             self._vision_latest_depth = emit_frame.depth_image
             self._vision_intrinsics = dict(emit_frame.intrinsics)
             self._vision_last_color_ts = now
@@ -1062,6 +1065,23 @@ class Ros2DataAcquisitionThread(QThread):
             }
         )
 
+    def set_vision_display_only(self, enabled: bool) -> None:
+        with self._vision_lock:
+            self._vision_display_only = bool(enabled)
+
+    def get_latest_vision_source_frame(self) -> Optional[Ros2CameraFrame]:
+        with self._vision_lock:
+            if self._vision_latest_color is None:
+                return None
+            timestamp = float(self._vision_last_color_ts or time.time())
+            return Ros2CameraFrame(
+                timestamp=timestamp,
+                color_image=self._vision_latest_color,
+                depth_image=self._vision_latest_depth,
+                intrinsics=dict(self._vision_intrinsics),
+                color_qimage=None,
+            )
+
     def set_vision_depth_profile(self, profile: str) -> None:
         profile_key = str(profile or "off").strip().lower()
         depth_fps_map = {
@@ -1111,22 +1131,21 @@ class Ros2DataAcquisitionThread(QThread):
                     self._vision_auto_qos_probe_deadline_ts = 0.0
                 h, w = image.shape[:2]
                 self._vision_resolution = f"{w}x{h}"
-                if (now - self._vision_last_emit_ts) >= (1.0 / self.vision_max_fps):
-                    self._vision_last_emit_ts = now
-                    if self._vision_latest_frame is not None and self._vision_latest_frame_seq != self._vision_consumed_frame_seq:
-                        self._vision_queue_overwrite_count += 1
-                    emit_frame = Ros2CameraFrame(
-                        timestamp=frame_ts if frame_ts > 0 else now,
-                        color_image=self._vision_latest_color,
-                        depth_image=self._vision_latest_depth,
-                        intrinsics=dict(self._vision_intrinsics),
-                        color_qimage=color_qimage,
-                    )
-                    self._vision_latest_frame = emit_frame
-                    self._vision_latest_frame_seq += 1
-                    self._vision_connected = True
-                else:
+                display_only = bool(self._vision_display_only and self._vision_latest_depth is None and self._vision_depth_target_fps <= 0.0)
+                if self._vision_latest_frame is not None and self._vision_latest_frame_seq != self._vision_consumed_frame_seq:
+                    self._vision_queue_overwrite_count += 1
                     self._vision_dropped_frames += 1
+                emit_frame = Ros2CameraFrame(
+                    timestamp=frame_ts if frame_ts > 0 else now,
+                    color_image=None if display_only else self._vision_latest_color,
+                    depth_image=self._vision_latest_depth,
+                    intrinsics=dict(self._vision_intrinsics),
+                    color_qimage=color_qimage,
+                )
+                self._vision_last_emit_ts = now
+                self._vision_latest_frame = emit_frame
+                self._vision_latest_frame_seq += 1
+                self._vision_connected = True
             if emit_frame is not None and self.vision_emit_signal:
                 self.vision_frame.emit(emit_frame)
             self._emit_vision_status(now=now, force=False)
