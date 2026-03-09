@@ -22,6 +22,12 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
+def _parse_bool_arg(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _configure_matplotlib_runtime() -> None:
     """Reduce non-actionable matplotlib font noise in GUI runtime."""
     warnings.filterwarnings(
@@ -103,12 +109,14 @@ class Ros2PhaseApp:
         vision_depth_topic: str = "/camera/camera/aligned_depth_to_color/image_raw",
         vision_camera_info_topic: str = "/camera/camera/color/camera_info",
         vision_stale_timeout_sec: float = 1.5,
-        vision_max_fps: float = 15.0,
+        vision_max_fps: float = 30.0,
+        vision_qos_mode: str = "auto",
         control_mode: str = "ros2",
         command_timeout_sec: float = 5.0,
+        show_vision_ui: bool | None = None,
+        show_simulation_ui: bool | None = None,
     ):
         self.logger = logging.getLogger(__name__)
-        self.config = self._load_config(config_path, sensor_type)
         self.sensor_type = sensor_type
         self.tactile_topic = tactile_topic
         self.health_topic = health_topic
@@ -119,8 +127,14 @@ class Ros2PhaseApp:
         self.vision_camera_info_topic = vision_camera_info_topic
         self.vision_stale_timeout_sec = vision_stale_timeout_sec
         self.vision_max_fps = vision_max_fps
+        self.vision_qos_mode = str(vision_qos_mode or "auto").strip().lower()
         self.control_mode = control_mode
         self.command_timeout_sec = command_timeout_sec
+        self.config = self._load_config(config_path, sensor_type)
+        self._apply_ui_overrides(
+            show_vision_ui=show_vision_ui,
+            show_simulation_ui=show_simulation_ui,
+        )
 
         self.app = None
         self.main_window = None
@@ -128,6 +142,8 @@ class Ros2PhaseApp:
         self.control_thread = None
         self.demo_manager = None
         self.is_running = False
+        self._error_log_last_ts = {}
+        self._error_log_interval_sec = 2.0
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -147,10 +163,38 @@ class Ros2PhaseApp:
                 logging.getLogger(__name__).warning("Failed to load config, fallback to default: %s", exc)
         return DemoConfig()
 
+    def _apply_ui_overrides(
+        self,
+        *,
+        show_vision_ui: bool | None,
+        show_simulation_ui: bool | None,
+    ) -> None:
+        ui_config = getattr(self.config, "ui", None)
+        if ui_config is None:
+            return
+
+        effective_show_vision_ui = show_vision_ui
+        if effective_show_vision_ui is None and not self.vision_enabled:
+            effective_show_vision_ui = False
+
+        if effective_show_vision_ui is not None:
+            vision_ui = getattr(ui_config, "vision_ui", {}) or {}
+            if not isinstance(vision_ui, dict):
+                vision_ui = {}
+            vision_ui["show_camera_view"] = bool(effective_show_vision_ui)
+            ui_config.vision_ui = vision_ui
+
+        if show_simulation_ui is not None:
+            simulation_ui = getattr(ui_config, "simulation_ui", {}) or {}
+            if not isinstance(simulation_ui, dict):
+                simulation_ui = {}
+            simulation_ui["show_simulation_view"] = bool(show_simulation_ui)
+            ui_config.simulation_ui = simulation_ui
+
     def initialize_modules(self) -> bool:
         try:
-            from core.ros2_data_acquisition import Ros2DataAcquisitionThread
-            from core.ros2_runtime_stubs import (
+            from src.core.ros2_data_acquisition import Ros2DataAcquisitionThread
+            from src.core.ros2_runtime_stubs import (
                 Ros2ControlThread,
                 Ros2ControlThreadStub,
                 Ros2DemoManagerStub,
@@ -166,6 +210,8 @@ class Ros2PhaseApp:
                 camera_info_topic=self.vision_camera_info_topic,
                 vision_stale_timeout_sec=self.vision_stale_timeout_sec,
                 vision_max_fps=self.vision_max_fps,
+                vision_emit_signal=False,
+                vision_qos_mode=self.vision_qos_mode,
             )
 
             if self.control_mode == "stub":
@@ -191,7 +237,7 @@ class Ros2PhaseApp:
         try:
             from PyQt5.QtGui import QFont
             from PyQt5.QtWidgets import QApplication
-            from gui.main_window import MainWindow
+            from src.gui.main_window import MainWindow
 
             self.app = QApplication(sys.argv)
             self.app.setApplicationName("Tactile Gripper Demo")
@@ -222,13 +268,23 @@ class Ros2PhaseApp:
         self.main_window.request_shutdown.connect(self.cleanup, Qt.QueuedConnection)
 
         self.data_acquisition_thread.error_occurred.connect(
-            lambda status, info: self.logger.error("ROS2 data error [%s]: %s", status, info),
+            lambda status, info: self._log_error_throttled("data", status, info),
             Qt.QueuedConnection,
         )
         self.control_thread.error_occurred.connect(
-            lambda status, info: self.logger.error("ROS2 control error [%s]: %s", status, info),
+            lambda status, info: self._log_error_throttled("control", status, info),
             Qt.QueuedConnection,
         )
+
+    def _log_error_throttled(self, source: str, status: str, info: dict) -> None:
+        key = f"{source}:{status}"
+        from time import monotonic
+        now = monotonic()
+        last = float(self._error_log_last_ts.get(key, 0.0))
+        if now - last < self._error_log_interval_sec:
+            return
+        self._error_log_last_ts[key] = now
+        self.logger.error("ROS2 %s error [%s]: %s", source, status, info)
 
     def start(self) -> int:
         if not self.initialize_modules():
@@ -297,9 +353,21 @@ def main() -> None:
     parser.add_argument("--arm-state-topic", type=str, default="/arm/state", help="ROS2 arm state topic")
     parser.add_argument(
         "--vision-enabled",
-        type=lambda x: str(x).lower() in ("1", "true", "yes", "y", "on"),
+        type=_parse_bool_arg,
         default=True,
         help="Enable ROS2 camera subscriptions for Vision UI",
+    )
+    parser.add_argument(
+        "--show-vision-ui",
+        type=_parse_bool_arg,
+        default=None,
+        help="Override whether the Vision tab is shown",
+    )
+    parser.add_argument(
+        "--show-simulation-ui",
+        type=_parse_bool_arg,
+        default=None,
+        help="Override whether the legacy simulation tab is shown",
     )
     parser.add_argument(
         "--vision-color-topic",
@@ -328,8 +396,15 @@ def main() -> None:
     parser.add_argument(
         "--vision-max-fps",
         type=float,
-        default=15.0,
+        default=30.0,
         help="Max FPS pushed from ROS2 image stream to UI",
+    )
+    parser.add_argument(
+        "--vision-qos-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "best_effort", "reliable"],
+        help="ROS2 QoS profile for vision subscriptions",
     )
     parser.add_argument(
         "--control-mode",
@@ -371,8 +446,11 @@ def main() -> None:
         vision_camera_info_topic=args.vision_camera_info_topic,
         vision_stale_timeout_sec=args.vision_stale_timeout_sec,
         vision_max_fps=args.vision_max_fps,
+        vision_qos_mode=args.vision_qos_mode,
         control_mode=args.control_mode,
         command_timeout_sec=args.command_timeout_sec,
+        show_vision_ui=args.show_vision_ui,
+        show_simulation_ui=args.show_simulation_ui,
     )
     sys.exit(app.start())
 

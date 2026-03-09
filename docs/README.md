@@ -31,12 +31,16 @@ Notes:
 - `phase6_vision_kickoff.md`: phase 6.1 vision integration (`realsense_monitor_node`, `phase6_vision.launch.py`).
 - `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
 - `windows_ros2_terminal_setup.md`: Windows terminal initialization for ROS2 (Conda-safe startup, Pixi DLL path, `use-ros2` helper).
+- `windows_vm_split_phaseB.md`: Phase B split deployment (Windows hardware nodes + VM app/control nodes).
+- `windows_ros2_realsense_quickstart.md`: Windows-side ROS2 RealSense node quickstart (build/start/verify/troubleshooting commands).
+- `windows_vm_one_click_runbook.md`: one-click runbook for Windows hardware bringup and VM end-to-end debug startup.
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 
 ## Current Refactor Snapshot (2026-03-04)
 
-- `develop` includes phase 6.1 vision ROS2 kickoff scaffolding.
-- `develop` includes phase A deployment scaffolding for Windows hardware nodes + VM app nodes.
-- `main` is synchronized to include the same merged baseline.
+- `develop` now includes phase 6.1 vision ROS2 kickoff scaffolding.
+- `develop` now includes phase A split deployment scaffolding.
+- `develop` now includes Phase B kickoff files for Windows-hardware + VM-app runtime split.
+- `main` currently tracks phase 5 merged baseline.
 - GUI demo commands are routed to task Action/Services in ROS2 mode.
-- Next target: complete cross-machine ROS2 validation, then migrate hardware nodes to Windows host side.
+- Next target: complete split-mode cross-machine regression and then move to 6b simulation-policy integration.

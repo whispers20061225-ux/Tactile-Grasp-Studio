@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN_ID="${1:-0}"
+SAMPLE_SEC="${2:-12}"
+START_EPOCH_SEC="${3:-0}"
+TOPIC_TIMEOUT_SEC="${4:-20}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
+
+COLOR_TOPIC="/camera/camera/color/image_raw"
+DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
+
+wait_until_epoch() {
+  local target="$1"
+  if [[ "${target}" -le 0 ]]; then
+    return 0
+  fi
+  while (( "$(date +%s)" < target )); do
+    sleep 0.2
+  done
+}
+
+wait_for_topic() {
+  local topic="$1"
+  local timeout_sec="$2"
+  local elapsed=0
+  while (( elapsed < timeout_sec )); do
+    local topics
+    topics="$(ros2 topic list 2>/dev/null || true)"
+    if echo "${topics}" | grep -Fxq "${topic}"; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+sample_hz() {
+  local topic="$1"
+  local window="$2"
+  local out_file
+  local err_file
+  local hz_pid
+  local output
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+
+  set +e
+  stdbuf -oL -eL ros2 topic hz "${topic}" >"${out_file}" 2>"${err_file}" &
+  hz_pid=$!
+  set -e
+
+  sleep "${window}"
+  kill "${hz_pid}" >/dev/null 2>&1 || true
+  wait "${hz_pid}" >/dev/null 2>&1 || true
+
+  output="$(cat "${out_file}" "${err_file}" 2>/dev/null || true)"
+  rm -f "${out_file}" "${err_file}" || true
+  echo "${output}" | awk '/average rate/ {print $3}' | tail -n 1
+}
+
+if ! wait_for_topic "${COLOR_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
+  echo "[FAIL] color topic not found within ${TOPIC_TIMEOUT_SEC}s: ${COLOR_TOPIC}" >&2
+  echo "[DIAG] discovered topics:" >&2
+  ros2 topic list 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! wait_for_topic "${DEPTH_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
+  echo "[FAIL] depth topic not found within ${TOPIC_TIMEOUT_SEC}s: ${DEPTH_TOPIC}" >&2
+  echo "[DIAG] discovered topics:" >&2
+  ros2 topic list 2>/dev/null >&2 || true
+  exit 1
+fi
+
+wait_until_epoch "${START_EPOCH_SEC}"
+start_epoch="$(date +%s)"
+
+color_hz="$(sample_hz "${COLOR_TOPIC}" "${SAMPLE_SEC}" || true)"
+depth_hz="$(sample_hz "${DEPTH_TOPIC}" "${SAMPLE_SEC}" || true)"
+if [[ -z "${color_hz}" || -z "${depth_hz}" ]]; then
+  echo "[FAIL] failed to sample hz (color=${color_hz:-n/a}, depth=${depth_hz:-n/a})" >&2
+  exit 1
+fi
+
+end_epoch="$(date +%s)"
+echo "[RESULT][vm] start=${start_epoch} end=${end_epoch} sample=${SAMPLE_SEC}s color_hz=${color_hz} depth_hz=${depth_hz}"

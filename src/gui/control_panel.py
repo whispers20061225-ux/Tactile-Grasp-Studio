@@ -808,6 +808,8 @@ class ControlPanel(QWidget):
 
 
         self.logger = logging.getLogger(__name__)
+        self._device_status_cache = {}
+        self._vision_available = True
 
 
 
@@ -4658,6 +4660,11 @@ class ControlPanel(QWidget):
 
 
 
+        self.live_data_label = QLabel("Force: N/A")
+        self.live_data_label.setWordWrap(True)
+        self.live_data_label.setStyleSheet("color: #cccccc;")
+        group_layout.addWidget(self.live_data_label)
+
         self.data_display = QTextEdit()
 
 
@@ -4675,6 +4682,8 @@ class ControlPanel(QWidget):
 
 
         self.data_display.setReadOnly(True)
+        self.data_display.setUndoRedoEnabled(False)
+        self.data_display.document().setMaximumBlockCount(200)
 
 
 
@@ -8591,7 +8600,8 @@ class ControlPanel(QWidget):
 
 
 
-            self.data_display.append(f"力数据: [{force_str}]")
+            if hasattr(self, "live_data_label"):
+                self.live_data_label.setText(f"Force: [{force_str}]")
 
 
 
@@ -8599,63 +8609,6 @@ class ControlPanel(QWidget):
 
 
 
-            
-
-
-
-
-
-
-
-            # 限制显示行数
-
-
-
-
-
-
-
-            if self.data_display.document().lineCount() > 100:
-
-
-
-
-
-
-
-                cursor = self.data_display.textCursor()
-
-
-
-
-
-
-
-                cursor.movePosition(cursor.Start)
-
-
-
-
-
-
-
-                cursor.select(cursor.LineUnderCursor)
-
-
-
-
-
-
-
-                cursor.removeSelectedText()
-
-
-
-
-
-
-
-                cursor.deleteChar()  # 删除换行符
 
 
 
@@ -8819,181 +8772,82 @@ class ControlPanel(QWidget):
 
 
 
+    def _should_update_device_status(self, key: str, connected: bool, simulation: bool) -> bool:
+        state = (bool(connected), bool(simulation))
+        if self._device_status_cache.get(key) == state:
+            return False
+        self._device_status_cache[key] = state
+        return True
+
+    def set_vision_available(self, available: bool, message: str = "Vision: Disabled") -> None:
+        available = bool(available)
+        if available == self._vision_available:
+            if not available:
+                self.vision_status_label.setText(str(message))
+            return
+
+        self._vision_available = available
+        if self._vision_available:
+            self._device_status_cache.pop("vision", None)
+            self.vision_status_label.setText(self._format_status_text("Vision", False, False))
+            self._apply_status_style(self.vision_status_label, False, False)
+            self.vision_connect_btn.setEnabled(True)
+            self.vision_disconnect_btn.setEnabled(False)
+            return
+
+        self._device_status_cache["vision"] = (False, False)
+        self.vision_status_label.setText(str(message))
+        self._apply_status_style(self.vision_status_label, False, False)
+        self.vision_connect_btn.setEnabled(False)
+        self.vision_disconnect_btn.setEnabled(False)
+
     def update_device_status(self, stm32: Optional[Dict[str, Any]] = None,
-
-
-
                              vision: Optional[Dict[str, Any]] = None,
-
-
-
                              arm: Optional[Dict[str, Any]] = None,
-
-
-
                              tactile: Optional[Dict[str, Any]] = None):
-
-
-
-        """更新设备连接状态"""
-
-
-
+        """Update device connection status."""
         if stm32 is not None:
-
-
-
             connected = bool(stm32.get("connected"))
-
-
-
             simulation = bool(stm32.get("simulation"))
-
-
-
-            self.stm32_status_label.setText(self._format_status_text("STM32", connected, simulation))
-
-
-
-            self._apply_status_style(self.stm32_status_label, connected, simulation)
-
-
-
-            self.stm32_connect_btn.setEnabled(not connected)
-
-
-
-            self.stm32_disconnect_btn.setEnabled(connected)
-
-
-
-            # STM32 连接后启用舵机控制
-
-
-
-            self.position_slider.setEnabled(connected)
-
-
-
-            self.speed_slider.setEnabled(connected)
-
-
-
-            self.force_slider.setEnabled(connected)
-
-
-
-            self.open_gripper_btn.setEnabled(connected)
-
-
-
-            self.close_gripper_btn.setEnabled(connected)
-
-
-
-            self.home_gripper_btn.setEnabled(connected)
-
-
-
-
-
-
+            if self._should_update_device_status("stm32", connected, simulation):
+                self.stm32_status_label.setText(self._format_status_text("STM32", connected, simulation))
+                self._apply_status_style(self.stm32_status_label, connected, simulation)
+                self.stm32_connect_btn.setEnabled(not connected)
+                self.stm32_disconnect_btn.setEnabled(connected)
+                self.position_slider.setEnabled(connected)
+                self.speed_slider.setEnabled(connected)
+                self.force_slider.setEnabled(connected)
+                self.open_gripper_btn.setEnabled(connected)
+                self.close_gripper_btn.setEnabled(connected)
+                self.home_gripper_btn.setEnabled(connected)
 
         if vision is not None:
-
-
-
-            connected = bool(vision.get("connected"))
-
-
-
-            simulation = bool(vision.get("simulation"))
-
-
-
-            self.vision_status_label.setText(self._format_status_text("视觉", connected, simulation))
-
-
-
-            self._apply_status_style(self.vision_status_label, connected, simulation)
-
-
-
-            self.vision_connect_btn.setEnabled(not connected)
-
-
-
-            self.vision_disconnect_btn.setEnabled(connected)
-
-
-
-
-
-
+            if self._vision_available:
+                connected = bool(vision.get("connected"))
+                simulation = bool(vision.get("simulation"))
+                if self._should_update_device_status("vision", connected, simulation):
+                    self.vision_status_label.setText(self._format_status_text("Vision", connected, simulation))
+                    self._apply_status_style(self.vision_status_label, connected, simulation)
+                    self.vision_connect_btn.setEnabled(not connected)
+                    self.vision_disconnect_btn.setEnabled(connected)
 
         if arm is not None:
-
-
-
             connected = bool(arm.get("connected"))
-
-
-
             simulation = bool(arm.get("simulation"))
-
-
-
-            self.arm_status_label.setText(self._format_status_text("机械臂", connected, simulation))
-
-
-
-            self._apply_status_style(self.arm_status_label, connected, simulation)
-
-
-
-            self.arm_connect_btn.setEnabled(not connected)
-
-
-
-            self.arm_disconnect_btn.setEnabled(connected)
-
-
-
-
-
-
+            if self._should_update_device_status("arm", connected, simulation):
+                self.arm_status_label.setText(self._format_status_text("Arm", connected, simulation))
+                self._apply_status_style(self.arm_status_label, connected, simulation)
+                self.arm_connect_btn.setEnabled(not connected)
+                self.arm_disconnect_btn.setEnabled(connected)
 
         if tactile is not None:
-
-
-
             connected = bool(tactile.get("connected"))
-
-
-
             simulation = bool(tactile.get("simulation"))
-
-
-
-            self.tactile_status_label.setText(self._format_status_text("触觉", connected, simulation))
-
-
-
-            self._apply_status_style(self.tactile_status_label, connected, simulation)
-
-
-
-            self.tactile_connect_btn.setEnabled(not connected)
-
-
-
-            self.tactile_disconnect_btn.setEnabled(connected)
-
-
-
-
-
-
+            if self._should_update_device_status("tactile", connected, simulation):
+                self.tactile_status_label.setText(self._format_status_text("Tactile", connected, simulation))
+                self._apply_status_style(self.tactile_status_label, connected, simulation)
+                self.tactile_connect_btn.setEnabled(not connected)
+                self.tactile_disconnect_btn.setEnabled(connected)
 
     def connect_stm32(self):
 

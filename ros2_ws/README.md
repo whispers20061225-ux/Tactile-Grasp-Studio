@@ -1,4 +1,4 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1 + Phase 6.2 base)
 
 This workspace now includes:
 
@@ -8,6 +8,7 @@ This workspace now includes:
 - phase 4: GUI command bridge to ROS2 control-layer services
 - phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
 - phase 6.1: vision ROS2 kickoff (`realsense_monitor_node` + `phase6_vision.launch.py`)
+- phase 6.2(base): simulation baseline chain (`tactile_sim` + `phase6_sim_base.launch.py`)
 
 ## Workspace layout
 
@@ -21,6 +22,7 @@ ros2_ws/
     tactile_bringup/
     tactile_ui_bridge/
     tactile_vision/
+    tactile_sim/
 ```
 
 ## Build (Ubuntu + ROS2 Jazzy)
@@ -172,4 +174,101 @@ Terminal B:
 ros2 node list | grep -E "realsense2_camera|realsense_monitor_node"
 ros2 topic hz /camera/camera/color/image_raw
 ros2 topic echo /system/health --once
+```
+
+## Run phase 6.2 (simulation baseline kickoff)
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_base.launch.py
+```
+
+Terminal B:
+
+```bash
+python main_ros2.py --control-mode ros2 --log-level INFO
+```
+
+Quick checks:
+
+```bash
+ros2 topic list | grep -E "/tactile/raw|/arm/state|/system/health"
+ros2 service list | grep -E "/arm/|/control/arm/"
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 800, wait: true}"
+```
+
+## Run phase 6.2 (Gazebo Sim + ros2_control kickoff)
+
+The Gazebo kickoff path now loads the DOF Bot robot model from
+`tactile_sim/urdf/dofbot_gazebo.urdf.xacro` and installs the matching
+`tactile_sim/meshes/*.STL` assets into the ROS package.
+
+Install runtime dependencies once (Ubuntu 24.04 + ROS2 Jazzy):
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-jazzy-ros-gz-sim \
+  ros-jazzy-ros-gz \
+  ros-jazzy-ros-gz-bridge \
+  ros-jazzy-gz-ros2-control \
+  ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-joint-trajectory-controller \
+  ros-jazzy-xacro
+```
+
+One-click VM startup:
+
+```bash
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
+```
+
+Override the DOF Bot spawn pose from the guard script if needed:
+
+```bash
+GAZEBO_SPAWN_X=0.24 GAZEBO_SPAWN_Y=0.0 GAZEBO_SPAWN_Z=0.405 \
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 true true
+```
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py
+```
+
+Optional GUI mode:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+```
+
+Adjust the DOF Bot spawn pose if needed:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true spawn_x:=0.24 spawn_y:=0.0 spawn_z:=0.405
+```
+
+Disable clock bridge (debug only):
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py bridge_clock:=false
+```
+
+Terminal B:
+
+```bash
+python main_ros2.py --control-mode ros2 --vision-enabled false --show-vision-ui false --log-level INFO
+```
+
+Quick checks:
+
+```bash
+ros2 topic list | grep -E "/joint_states|/arm/state|/tactile/raw|/system/health"
+ros2 action list | grep /joint_trajectory_controller/follow_joint_trajectory
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [10.0, 20.0, 15.0], duration_ms: 1200, wait: true}"
 ```

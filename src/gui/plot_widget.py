@@ -736,16 +736,7 @@ class TactilePlotWidget(PlotWidget):
             self.pending_update = True
             
             # 调试信息
-            if time.time() - getattr(self, '_last_debug_time', 0) > 2.0:
-                if has_3d_force:
-                    print(f"三维力数据 - 单元数: {self.num_taxels}")
-                    print(f"  Fx范围: {np.min(self.force_vectors[:,0]):.1f}-{np.max(self.force_vectors[:,0]):.1f}")
-                    print(f"  Fy范围: {np.min(self.force_vectors[:,1]):.1f}-{np.max(self.force_vectors[:,1]):.1f}")
-                    print(f"  Fz范围: {np.min(self.force_vectors[:,2]):.1f}-{np.max(self.force_vectors[:,2]):.1f}")
-                    print(f"  合力大小范围: {np.min(self.force_magnitudes):.1f}-{np.max(self.force_magnitudes):.1f}")
-                else:
-                    print(f"一维力数据 - 范围: {np.min(self.force_data):.1f}-{np.max(self.force_data):.1f}")
-                
+            if time.time() - getattr(self, "_last_debug_time", 0) > 2.0:
                 self._last_debug_time = time.time()
                 
         except Exception as e:
@@ -854,6 +845,8 @@ class TactilePlotWidget(PlotWidget):
                         x_min = self.frame_numbers[start_idx]
                         x_max = self.frame_numbers[end_idx-1] if end_idx > 0 else self.frame_numbers[start_idx]
                     
+                    if x_min == x_max:
+                        x_max = x_min + 1
                     self.ax3.set_xlim(x_min, x_max)
                     
                     # y轴范围 - 基于所有显示的数据
@@ -1734,7 +1727,10 @@ class ForcePlotWidget(PlotWidget):
                 y_min = min(self.total_force_history)
                 y_max = max(self.total_force_history)
                 margin = max(10, (y_max - y_min) * 0.2)  # 增加边距
-                self.ax1.set_xlim(0, len(self.total_force_history)-1)
+                if len(self.total_force_history) > 1:
+                    self.ax1.set_xlim(0, len(self.total_force_history)-1)
+                else:
+                    self.ax1.set_xlim(-0.5, 0.5)
                 self.ax1.set_ylim(y_min - margin, y_max + margin)
             
             # 更新平均力图
@@ -1754,7 +1750,10 @@ class ForcePlotWidget(PlotWidget):
                     y_min = min(all_avg_data)
                     y_max = max(all_avg_data)
                     margin = max(2, (y_max - y_min) * 0.2)
-                    self.ax2.set_xlim(0, len(self.average_force_history)-1)
+                    if len(self.average_force_history) > 1:
+                        self.ax2.set_xlim(0, len(self.average_force_history)-1)
+                    else:
+                        self.ax2.set_xlim(-0.5, 0.5)
                     self.ax2.set_ylim(y_min - margin, y_max + margin)
             
             # 更新最大力图
@@ -1774,7 +1773,10 @@ class ForcePlotWidget(PlotWidget):
                     y_min = min(all_max_data)
                     y_max = max(all_max_data)
                     margin = max(10, (y_max - y_min) * 0.2)
-                    self.ax3.set_xlim(0, len(self.max_force_history)-1)
+                    if len(self.max_force_history) > 1:
+                        self.ax3.set_xlim(0, len(self.max_force_history)-1)
+                    else:
+                        self.ax3.set_xlim(-0.5, 0.5)
                     self.ax3.set_ylim(y_min - margin, y_max + margin)
             
             # 更新力分布图

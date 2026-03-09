@@ -3,25 +3,97 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$ArmParamFile = "",
-    [string]$RealsenseSerial = "_333422301846",
+    [string]$RealsenseSerial = "",
+    [int]$ColorWidth = 640,
+    [int]$ColorHeight = 480,
+    [int]$ColorFps = 30,
+    [int]$DepthWidth = 640,
+    [int]$DepthHeight = 480,
+    [int]$DepthFps = 30,
+    [bool]$AlignDepth = $true,
+    [bool]$WarmupRosGraph = $true,
+    [switch]$UseRealsenseWatchdog = $true,
     [switch]$StartArm = $true,
     [switch]$StartRealsense = $true,
+    [switch]$Foreground = $false,
     [switch]$Execute = $false
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
+$shellExe = "pwsh"
+if (-not (Get-Command $shellExe -ErrorAction SilentlyContinue)) {
+    $shellExe = "powershell"
+}
+$defaultWorkspaceSetup = Join-Path $projectRoot "ros2_ws\\install\\local_setup.ps1"
 
-. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
+if (-not $WorkspaceSetup -and (Test-Path $defaultWorkspaceSetup)) {
+    $WorkspaceSetup = $defaultWorkspaceSetup
+}
 
-$realsenseCmd = @(
-    "ros2 run realsense2_camera realsense2_camera_node --ros-args",
-    "-p serial_no:=$RealsenseSerial",
-    "-p enable_color:=true",
-    "-p enable_depth:=true",
-    "-p align_depth.enable:=true",
-    "-p rgb_camera.profile:=640x480x15",
-    "-p depth_module.profile:=640x480x15"
-) -join " "
+if (-not $ArmParamFile) {
+    $defaultArmParam = Join-Path $projectRoot "ros2_ws\\src\\tactile_bringup\\config\\split_windows_hardware.yaml"
+    if (Test-Path $defaultArmParam) {
+        $ArmParamFile = $defaultArmParam
+    }
+}
+
+. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId -WarmupRosGraph $WarmupRosGraph
+
+function Test-RosPackage {
+    param([string]$PackageName)
+    $oldNativeBehavior = $null
+    $hasNativePref = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePref = $true
+        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+        $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        & ros2 pkg prefix $PackageName 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+        }
+    }
+}
+
+function Test-PythonModule {
+    param([string]$ModuleName)
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    $oldNativeBehavior = $null
+    $hasNativePref = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePref = $true
+        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+        $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        python -c "import $ModuleName" 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+        }
+    }
+}
+
+$realsenseCmd = ""
+$realsenseMode = ""
+$realsenseLaunchCmd = ""
+$alignDepthValue = $AlignDepth.ToString().ToLower()
+$alignDepthToken = if ($AlignDepth) { '$true' } else { '$false' }
 
 $armCmd = ""
 if ($ArmParamFile) {
@@ -30,35 +102,151 @@ if ($ArmParamFile) {
     $armCmd = "ros2 run tactile_hardware arm_driver_node  # add --ros-args --params-file <path>"
 }
 
+$hasRealsensePkg = Test-RosPackage -PackageName "realsense2_camera"
+$hasRealsenseFallbackPkg = Test-RosPackage -PackageName "tactile_vision"
+$hasArmPkg = Test-RosPackage -PackageName "tactile_hardware"
+
+if ($StartRealsense) {
+    if ($hasRealsensePkg) {
+        $realsenseMode = "realsense2_camera"
+        $realsenseArgs = @(
+            "ros2 run realsense2_camera realsense2_camera_node --ros-args",
+            "-p enable_color:=true",
+            "-p enable_depth:=true",
+            "-p align_depth.enable:=$alignDepthValue",
+            "-p rgb_camera.profile:=${ColorWidth}x${ColorHeight}x${ColorFps}",
+            "-p depth_module.profile:=${DepthWidth}x${DepthHeight}x${DepthFps}"
+        )
+        if ($RealsenseSerial) {
+            $realsenseArgs += "-p serial_no:=$RealsenseSerial"
+        }
+        $realsenseCmd = $realsenseArgs -join " "
+    } elseif ($hasRealsenseFallbackPkg) {
+        if (-not (Test-PythonModule -ModuleName "pyrealsense2")) {
+            Write-Warning "Fallback node requires python module 'pyrealsense2', but it is missing."
+            Write-Warning "Install hint: python -m pip install pyrealsense2"
+            Write-Warning "If build tools fail with pkg_resources missing, run: python -m pip install \"setuptools<81\""
+            $StartRealsense = $false
+        } else {
+        $realsenseMode = "tactile_vision.realsense_camera_node"
+        $realsenseArgs = @(
+            "ros2 run tactile_vision realsense_camera_node --ros-args",
+            "-p enable_color:=true",
+            "-p enable_depth:=true",
+            "-p align_depth.enable:=$alignDepthValue",
+            "-p color_width:=$ColorWidth",
+            "-p color_height:=$ColorHeight",
+            "-p color_fps:=$ColorFps",
+            "-p depth_width:=$DepthWidth",
+            "-p depth_height:=$DepthHeight",
+            "-p depth_fps:=$DepthFps",
+            "-p frame_timeout_ms:=300",
+            "-p max_consecutive_timeouts:=8",
+            "-p restart_cooldown_sec:=1.5",
+            "-p capture_stale_sec:=1.5",
+            "-p publish_only_when_new_frame:=true",
+            "-p use_reliable_qos:=true"
+        )
+        if ($RealsenseSerial) {
+            $realsenseArgs += "-p serial_no:=$RealsenseSerial"
+        }
+        $realsenseCmd = $realsenseArgs -join " "
+        Write-Warning "Package 'realsense2_camera' not found. Falling back to tactile_vision/realsense_camera_node."
+        }
+    } else {
+        Write-Warning "No RealSense publisher package found. Build ros2_ws (including tactile_vision) on Windows first."
+        Write-Warning "Hint: cd ros2_ws; colcon build --merge-install --symlink-install --packages-select tactile_interfaces tactile_vision tactile_bringup"
+        $StartRealsense = $false
+    }
+}
+
+if ($StartArm -and -not $hasArmPkg) {
+    Write-Warning "Package 'tactile_hardware' not found. Skipping arm node. Build ros2_ws on Windows first."
+    if (-not $WorkspaceSetup) {
+        Write-Warning "Hint: no WorkspaceSetup loaded. Build and source ros2_ws\\install\\local_setup.bat."
+    }
+    $StartArm = $false
+}
+
+if ($StartRealsense) {
+    if ($UseRealsenseWatchdog) {
+        $realsenseLaunchCmd = "& `"$scriptDir\\realsense_watchdog.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+        if ($WorkspaceSetup) {
+            $realsenseLaunchCmd += " -WorkspaceSetup `"$WorkspaceSetup`""
+        }
+        if ($RealsenseSerial) {
+            $realsenseLaunchCmd += " -RealsenseSerial `"$RealsenseSerial`""
+        }
+        $realsenseLaunchCmd += " -ColorWidth $ColorWidth -ColorHeight $ColorHeight -ColorFps $ColorFps"
+        $realsenseLaunchCmd += " -DepthWidth $DepthWidth -DepthHeight $DepthHeight -DepthFps $DepthFps"
+        $realsenseLaunchCmd += " -AlignDepth $alignDepthToken"
+        if ($realsenseMode -eq "realsense2_camera") {
+            $realsenseLaunchCmd += " -UseRealsense2Camera"
+        }
+    } else {
+        $realsenseLaunchCmd = $realsenseCmd
+    }
+}
+
 Write-Host ""
 Write-Host "Windows hardware node commands:"
 if ($StartRealsense) {
-    Write-Host "  [RealSense] $realsenseCmd"
+    if ($UseRealsenseWatchdog) {
+        Write-Host "  [RealSense][$realsenseMode+watchdog] $realsenseLaunchCmd"
+    } else {
+        Write-Host "  [RealSense][$realsenseMode] $realsenseCmd"
+    }
 }
 if ($StartArm) {
     Write-Host "  [Arm]       $armCmd"
 }
 Write-Host ""
 
+if ($Foreground) {
+    if ($StartRealsense -and -not $StartArm) {
+        if ($UseRealsenseWatchdog) {
+            Write-Host "Foreground mode: running RealSense watchdog in current terminal."
+        } else {
+            Write-Host "Foreground mode: running RealSense node in current terminal."
+        }
+        Invoke-Expression $realsenseLaunchCmd
+        exit $LASTEXITCODE
+    }
+    if ($StartArm -and -not $StartRealsense) {
+        Write-Host "Foreground mode: running arm node in current terminal."
+        Invoke-Expression $armCmd
+        exit $LASTEXITCODE
+    }
+    Write-Error "Foreground mode supports exactly one node at a time. Use -StartArm or -StartRealsense."
+    exit 1
+}
+
 if (-not $Execute) {
     Write-Host "Dry-run mode. Re-run with -Execute to spawn new PowerShell windows."
     exit 0
 }
 
+if (-not $StartRealsense -and -not $StartArm) {
+    Write-Error "No launchable hardware nodes found in current Windows ROS2 environment."
+    exit 1
+}
+
 if ($StartRealsense) {
-    $realsenseLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+    $warmupValue = if ($WarmupRosGraph) { '$true' } else { '$false' }
+    $realsenseLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId -WarmupRosGraph $warmupValue"
     if ($WorkspaceSetup) {
         $realsenseLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
-    $realsenseLaunch += "; $realsenseCmd }"
-    Start-Process pwsh -ArgumentList "-NoExit", "-Command", $realsenseLaunch
+    $realsenseLaunch += "; $realsenseLaunchCmd }"
+    Start-Process $shellExe -ArgumentList "-NoExit", "-Command", $realsenseLaunch
 }
 
 if ($StartArm) {
-    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+    $warmupValue = if ($WarmupRosGraph) { '$true' } else { '$false' }
+    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId -WarmupRosGraph $warmupValue"
     if ($WorkspaceSetup) {
         $armLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
     $armLaunch += "; $armCmd }"
-    Start-Process pwsh -ArgumentList "-NoExit", "-Command", $armLaunch
+    Start-Process $shellExe -ArgumentList "-NoExit", "-Command", $armLaunch
 }

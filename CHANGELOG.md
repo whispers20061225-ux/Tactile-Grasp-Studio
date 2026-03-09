@@ -6,6 +6,31 @@ All notable project updates are recorded in this file.
 
 - Next planned step:
   - Phase 6.2 Gazebo + MoveIt2 + SmolVLA shadow-policy integration.
+- Split-stream stability optimization (Windows + VM):
+  - Added C++ latest-frame relay package:
+    - `ros2_ws/src/tactile_vision_cpp`
+    - node: `latest_frame_relay_node`
+  - Wired relay node into launch/config:
+    - `split_vm_app.launch.py` / `split_vm_app.yaml`
+    - `phase6_vision.launch.py` / `phase6_vision.yaml`
+  - UI path now consumes relay topics:
+    - `/camera/relay/color/image_raw`
+    - `/camera/relay/aligned_depth_to_color/image_raw`
+    - `/camera/relay/color/camera_info`
+  - `Ros2DataAcquisitionThread` now supports queue-size-1 frame consumption:
+    - added `consume_latest_vision_frame()`
+    - vision frame signal push can be disabled (`vision_emit_signal=False`)
+    - vision parse errors are rate-limited.
+  - `MainWindow` ROS2 vision path switched to pull+latest-frame rendering:
+    - single-slot pending frame overwrite
+    - fixed-rate render pump (15Hz target)
+    - reduced Qt event queue buildup under long runs.
+  - Windows startup warmup hardening:
+    - `env_ros2_windows.ps1` supports ROS graph warmup (`ros2 daemon stop/start`)
+    - `start_realsense_ready.ps1`, `start_hw_nodes.ps1`, `realsense_watchdog.ps1` enabled warmup by default.
+  - VM one-click startup hardening:
+    - stale process cleanup before launch
+    - relay topic availability guard before UI start.
 - Windows + VM split deployment kickoff (Phase A):
   - Added CycloneDDS peer-mode templates:
     - `config/dds/cyclonedds_windows.xml`
@@ -18,13 +43,32 @@ All notable project updates are recorded in this file.
     - `deploy/vm/check_connectivity.sh`
   - Added runbook:
     - `docs/windows_vm_split_phaseA.md`
-  - Windows ROS2 terminal hardening:
-    - Enhanced `deploy/windows/env_ros2_windows.ps1`:
-      - clean conda-injected env vars / PATH entries
-      - auto prepend pixi OpenSSL DLL path for CycloneDDS chain
-    - Added operator doc:
-      - `docs/windows_ros2_terminal_setup.md`
+  - Added Windows runtime hardening in `deploy/windows/env_ros2_windows.ps1`:
+    - clean conda-injected env vars / PATH entries
+    - auto prepend pixi OpenSSL DLL path for CycloneDDS dependency chain
+    - use runtime-local `CYCLONEDDS_URI` file path to avoid Windows URI parsing issues
+  - Added operator docs:
+    - `docs/windows_ros2_terminal_setup.md`
+    - `docs/windows_ros2_realsense_quickstart.md`
   - Goal: keep NAT for internet, use Host-only for deterministic ROS2 communication.
+- Windows + VM split execution kickoff (Phase B):
+  - Added VM app-side launch:
+    - `ros2_ws/src/tactile_bringup/launch/split_vm_app.launch.py`
+    - `ros2_ws/src/tactile_bringup/config/split_vm_app.yaml`
+  - Added Windows hardware-side arm config:
+    - `ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml`
+  - Added VM app start helper:
+    - `deploy/vm/start_split_vm_app.sh`
+  - Updated Windows hardware start helper:
+    - `deploy/windows/start_hw_nodes.ps1` now defaults to `split_windows_hardware.yaml`
+    - fallback RealSense publish path:
+      - uses `tactile_vision/realsense_camera_node` when `realsense2_camera` package is not available on Windows
+    - added RealSense-only helper:
+      - `deploy/windows/start_realsense_only.ps1`
+  - Added RealSense publisher node in `tactile_vision`:
+    - `realsense_camera_node.py` (pyrealsense2 based)
+  - Added runbook:
+    - `docs/windows_vm_split_phaseB.md`
 - Phase 6.1 kickoff:
   - Added package `tactile_vision` with `realsense_monitor_node`.
   - Added `phase6_vision.launch.py` and `phase6_vision.yaml`.

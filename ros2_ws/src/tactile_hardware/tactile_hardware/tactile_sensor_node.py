@@ -93,7 +93,7 @@ class TactileSensorNode(Node):
 
         try:
             from config.demo_config import DemoConfig
-            from core.hardware_interface import HardwareInterface
+            from src.core.hardware_interface import HardwareInterface
 
             cfg = DemoConfig()
             cfg.hardware.sensor.port = effective_port
