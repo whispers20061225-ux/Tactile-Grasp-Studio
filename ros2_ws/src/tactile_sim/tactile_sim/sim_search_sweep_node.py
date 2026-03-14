@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import json
 import math
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import rclpy
 from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
+from tactile_interfaces.msg import DetectionResult
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 
@@ -37,6 +37,7 @@ class SimSearchSweepNode(Node):
         )
         self.declare_parameter("pick_active_topic", "")
         self.declare_parameter("candidate_visible_topic", "")
+        self.declare_parameter("detection_result_topic", "")
         self.declare_parameter("vision_result_topic", "/qwen/vision_result")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
@@ -82,7 +83,13 @@ class SimSearchSweepNode(Node):
         self.candidate_visible_topic = str(
             self.get_parameter("candidate_visible_topic").value
         ).strip()
-        self.vision_result_topic = str(self.get_parameter("vision_result_topic").value).strip()
+        detection_result_topic = str(
+            self.get_parameter("detection_result_topic").value
+        ).strip()
+        legacy_vision_result_topic = str(
+            self.get_parameter("vision_result_topic").value
+        ).strip()
+        self.vision_result_topic = detection_result_topic or legacy_vision_result_topic
         self.joint_state_topic = str(self.get_parameter("joint_state_topic").value).strip()
         self.search_pose_deg = [
             float(v) for v in list(self.get_parameter("search_pose_deg").value)
@@ -212,7 +219,9 @@ class SimSearchSweepNode(Node):
                 Bool, self.candidate_visible_topic, self._on_candidate_visible, 10
             )
         if self.vision_result_topic:
-            self.create_subscription(String, self.vision_result_topic, self._on_vision_result, 10)
+            self.create_subscription(
+                DetectionResult, self.vision_result_topic, self._on_vision_result, 10
+            )
         self.create_timer(0.2, self._on_timer)
 
         self.get_logger().info(
@@ -277,36 +286,30 @@ class SimSearchSweepNode(Node):
             pose_deg.append(math.degrees(float(msg.position[idx])))
         self._current_pose_deg = pose_deg
 
-    def _on_vision_result(self, msg: String) -> None:
+    def _on_vision_result(self, msg: DetectionResult) -> None:
         now_sec = self.get_clock().now().nanoseconds / 1e9
-        try:
-            payload = json.loads(str(msg.data or ""))
-        except json.JSONDecodeError:
-            return
-        if not isinstance(payload, dict):
-            return
-
-        point_px = payload.get("point_px")
-        bbox_xyxy = payload.get("bbox_xyxy")
-        image_size = payload.get("image_size")
-        target_label = str(payload.get("target_label") or "").strip()
-        accepted = bool(payload.get("accepted", False))
-
         point_px_value = (
-            [float(point_px[0]), float(point_px[1])]
-            if isinstance(point_px, list) and len(point_px) == 2
+            [float(msg.point_px[0]), float(msg.point_px[1])]
+            if bool(msg.has_point)
             else None
         )
         bbox_xyxy_value = (
-            [float(bbox_xyxy[0]), float(bbox_xyxy[1]), float(bbox_xyxy[2]), float(bbox_xyxy[3])]
-            if isinstance(bbox_xyxy, list) and len(bbox_xyxy) == 4
+            [
+                float(msg.bbox.x_offset),
+                float(msg.bbox.y_offset),
+                float(msg.bbox.x_offset + msg.bbox.width),
+                float(msg.bbox.y_offset + msg.bbox.height),
+            ]
+            if bool(msg.has_bbox)
             else None
         )
         image_size_value = (
-            [int(image_size[0]), int(image_size[1])]
-            if isinstance(image_size, list) and len(image_size) == 2
+            [int(msg.image_width), int(msg.image_height)]
+            if int(msg.image_width) > 0 and int(msg.image_height) > 0
             else None
         )
+        target_label = str(msg.target_label or "").strip()
+        accepted = bool(msg.accepted)
 
         session_accepts = self._update_target_session(
             now_sec=now_sec,
@@ -321,28 +324,28 @@ class SimSearchSweepNode(Node):
             self._vision_point_px = point_px_value
             self._vision_bbox_xyxy = bbox_xyxy_value
             self._vision_image_size = image_size_value
-            self._vision_pose_valid = bool(payload.get("pose_valid", False))
-            self._vision_pose_stable = bool(payload.get("pose_stable", False))
-            self._vision_candidate_complete = bool(payload.get("candidate_complete", False))
-            self._vision_target_locked = bool(payload.get("target_locked", False))
-            self._candidate_visible = True
+            self._vision_pose_valid = False
+            self._vision_pose_stable = False
+            self._vision_candidate_complete = bool(msg.candidate_complete)
+            self._vision_target_locked = False
+            self._candidate_visible = bool(msg.candidate_visible)
             self._last_vision_result_ts = now_sec
         elif self._session_active and (now_sec - self._session_last_seen_ts) <= self.target_session_timeout_sec:
-            self._vision_pose_valid = bool(payload.get("pose_valid", False))
-            self._vision_pose_stable = bool(payload.get("pose_stable", False))
-            self._vision_candidate_complete = bool(payload.get("candidate_complete", False))
-            self._vision_target_locked = bool(payload.get("target_locked", False))
-            self._candidate_visible = True
+            self._vision_pose_valid = False
+            self._vision_pose_stable = False
+            self._vision_candidate_complete = bool(msg.candidate_complete)
+            self._vision_target_locked = False
+            self._candidate_visible = bool(msg.candidate_visible)
         else:
             self._vision_label = target_label
             self._vision_point_px = point_px_value
             self._vision_bbox_xyxy = bbox_xyxy_value
             self._vision_image_size = image_size_value
-            self._vision_pose_valid = bool(payload.get("pose_valid", False))
-            self._vision_pose_stable = bool(payload.get("pose_stable", False))
-            self._vision_candidate_complete = bool(payload.get("candidate_complete", False))
-            self._vision_target_locked = bool(payload.get("target_locked", False))
-            self._candidate_visible = bool(payload.get("candidate_visible", False))
+            self._vision_pose_valid = False
+            self._vision_pose_stable = False
+            self._vision_candidate_complete = bool(msg.candidate_complete)
+            self._vision_target_locked = False
+            self._candidate_visible = bool(msg.candidate_visible)
 
         errors = self._compute_centering_errors()
         if errors is not None:
@@ -463,16 +466,6 @@ class SimSearchSweepNode(Node):
             )
             return
 
-        if self._vision_pose_valid and not self._vision_target_locked:
-            if not self._holding_for_pose_lock:
-                self.get_logger().info(
-                    "search sweep holding position: pose estimate valid, waiting for lock"
-                )
-                self._holding_for_pose_lock = True
-            self._next_motion_time = now_sec + self.centering_hold_sec
-            return
-        self._holding_for_pose_lock = False
-
         if self._should_center_target(now_sec):
             handled = self._run_centering(now_sec)
             if handled:
@@ -487,8 +480,6 @@ class SimSearchSweepNode(Node):
         return bool(
             self.enable_centering
             and self._candidate_visible
-            and not self._vision_pose_valid
-            and not self._vision_target_locked
             and self._last_vision_result_ts > 0.0
             and (now_sec - self._last_vision_result_ts) <= self.vision_result_stale_sec
         )

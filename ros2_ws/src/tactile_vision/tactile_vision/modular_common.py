@@ -76,6 +76,23 @@ def decode_depth_image(msg: Image) -> Optional[np.ndarray]:
     return None
 
 
+def decode_mono8_image(msg: Image) -> Optional[np.ndarray]:
+    height = int(getattr(msg, "height", 0) or 0)
+    width = int(getattr(msg, "width", 0) or 0)
+    if height <= 0 or width <= 0:
+        return None
+
+    encoding = str(getattr(msg, "encoding", "") or "").lower()
+    if encoding not in ("mono8", "8uc1"):
+        return None
+
+    data = np.frombuffer(getattr(msg, "data", b""), dtype=np.uint8)
+    expected = height * width
+    if data.size < expected:
+        return None
+    return data[:expected].reshape((height, width))
+
+
 def clamp_int(value: int, lower: int, upper: int) -> int:
     return max(lower, min(upper, int(value)))
 
@@ -106,6 +123,22 @@ def make_xyz_cloud(points_xyz: np.ndarray, frame_id: str, stamp) -> PointCloud2:
     cloud.is_dense = True
     cloud.data = points.tobytes()
     return cloud
+
+
+def make_mono8_image(mask_u8: np.ndarray, frame_id: str, stamp) -> Image:
+    image = Image()
+    image.header.frame_id = frame_id
+    image.header.stamp = stamp
+    mask = np.asarray(mask_u8, dtype=np.uint8)
+    if mask.ndim != 2:
+        mask = mask.reshape((-1, 1))
+    image.height = int(mask.shape[0])
+    image.width = int(mask.shape[1])
+    image.encoding = "mono8"
+    image.is_bigendian = 0
+    image.step = int(mask.shape[1])
+    image.data = mask.tobytes()
+    return image
 
 
 def quaternion_to_rotation_matrix(quat_xyzw: np.ndarray) -> np.ndarray:
@@ -149,6 +182,17 @@ def encode_image_to_base64_jpeg(image_rgb: np.ndarray, jpeg_quality: int) -> str
     if not success:
         raise ValueError("failed to encode frame as JPEG")
     return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def decode_png_base64_mask(mask_png_b64: str) -> Optional[np.ndarray]:
+    try:
+        encoded = base64.b64decode(mask_png_b64)
+    except Exception:  # noqa: BLE001
+        return None
+    image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        return None
+    return image
 
 
 def extract_message_text(payload: dict[str, Any]) -> str:

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import rclpy
@@ -13,12 +12,13 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, String
+from tactile_interfaces.msg import DetectionResult
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from tactile_vision.modular_common import (
-    clamp_int,
     compact_json,
     decode_depth_image,
+    decode_mono8_image,
     make_xyz_cloud,
     quaternion_to_rotation_matrix,
     voxel_downsample,
@@ -91,7 +91,7 @@ class CloudFilterNode(Node):
 
         self._detection_lock = threading.Lock()
         self._sensor_lock = threading.Lock()
-        self._latest_detection: Optional[dict[str, Any]] = None
+        self._latest_detection: Optional[DetectionResult] = None
         self._latest_detection_ts = 0.0
         self._latest_depth_msg: Optional[Image] = None
         self._latest_camera_info: Optional[CameraInfo] = None
@@ -113,7 +113,7 @@ class CloudFilterNode(Node):
         )
 
         self.create_subscription(
-            String, self.detection_result_topic, self._on_detection_result, qos_reliable
+            DetectionResult, self.detection_result_topic, self._on_detection_result, qos_reliable
         )
         self.create_subscription(Image, self.depth_topic, self._on_depth_image, qos_sensor)
         self.create_subscription(
@@ -141,13 +141,9 @@ class CloudFilterNode(Node):
             f"target_pose={self.target_pose_topic}, target_frame={self.target_frame}"
         )
 
-    def _on_detection_result(self, msg: String) -> None:
-        try:
-            payload = json.loads(str(msg.data or "{}"))
-        except Exception:  # noqa: BLE001
-            payload = {"status": "parse_error", "accepted": False}
+    def _on_detection_result(self, msg: DetectionResult) -> None:
         with self._detection_lock:
-            self._latest_detection = payload
+            self._latest_detection = msg
             self._latest_detection_ts = time.time()
 
     def _on_depth_image(self, msg: Image) -> None:
@@ -163,7 +159,7 @@ class CloudFilterNode(Node):
             return
 
         with self._detection_lock:
-            detection = dict(self._latest_detection) if self._latest_detection is not None else None
+            detection = self._latest_detection
             detection_ts = self._latest_detection_ts
         with self._sensor_lock:
             depth_msg = self._latest_depth_msg
@@ -174,8 +170,8 @@ class CloudFilterNode(Node):
         if time.time() - detection_ts > self.detection_stale_sec:
             self._reset_state("stale_detection")
             return
-        if not bool(detection.get("accepted")):
-            self._reset_state(str(detection.get("status") or "detection_not_accepted"))
+        if not bool(detection.accepted):
+            self._reset_state(str(detection.reason or "detection_not_accepted"))
             return
 
         depth_image = decode_depth_image(depth_msg)
@@ -183,22 +179,7 @@ class CloudFilterNode(Node):
             self._reset_state("invalid_depth_image")
             return
 
-        bbox = detection.get("bbox_xyxy")
-        point = detection.get("point_px")
-        if not isinstance(bbox, list) or len(bbox) != 4:
-            if isinstance(point, list) and len(point) == 2:
-                radius_px = 24
-                bbox = [
-                    int(point[0]) - radius_px,
-                    int(point[1]) - radius_px,
-                    int(point[0]) + radius_px,
-                    int(point[1]) + radius_px,
-                ]
-            else:
-                self._reset_state("missing_bbox_or_point")
-                return
-
-        points_world = self._extract_target_cloud(depth_image, camera_info, depth_msg, bbox)
+        points_world = self._extract_target_cloud(depth_image, camera_info, depth_msg, detection)
         if points_world is None or points_world.shape[0] < self.min_target_points:
             self._reset_state("insufficient_target_points")
             return
@@ -240,6 +221,7 @@ class CloudFilterNode(Node):
                 ],
                 "locked": locked,
                 "stable_count": int(self._stable_count),
+                "mask_used": bool(detection.has_mask),
             }
         )
         self.debug_pub.publish(debug_msg)
@@ -251,7 +233,7 @@ class CloudFilterNode(Node):
                 "cloud filter result: "
                 f"points={points_world.shape[0]} "
                 f"locked={locked} "
-                f"stable_count={self._stable_count}"
+                f"mask_used={detection.has_mask}"
             )
 
     def _extract_target_cloud(
@@ -259,26 +241,42 @@ class CloudFilterNode(Node):
         depth_image: np.ndarray,
         camera_info: CameraInfo,
         depth_msg: Image,
-        bbox_xyxy: list[Any],
+        detection: DetectionResult,
     ) -> Optional[np.ndarray]:
         image_h, image_w = depth_image.shape[:2]
-        x1 = clamp_int(int(round(float(bbox_xyxy[0]))) - self.bbox_margin_px, 0, image_w - 1)
-        y1 = clamp_int(int(round(float(bbox_xyxy[1]))) - self.bbox_margin_px, 0, image_h - 1)
-        x2 = clamp_int(int(round(float(bbox_xyxy[2]))) + self.bbox_margin_px, 1, image_w)
-        y2 = clamp_int(int(round(float(bbox_xyxy[3]))) + self.bbox_margin_px, 1, image_h)
-        if x2 <= x1 or y2 <= y1:
-            return None
+        x1 = 0
+        y1 = 0
+        x2 = image_w
+        y2 = image_h
+
+        if detection.has_bbox:
+            x1 = max(0, int(detection.bbox.x_offset) - self.bbox_margin_px)
+            y1 = max(0, int(detection.bbox.y_offset) - self.bbox_margin_px)
+            x2 = min(image_w, int(detection.bbox.x_offset + detection.bbox.width) + self.bbox_margin_px)
+            y2 = min(image_h, int(detection.bbox.y_offset + detection.bbox.height) + self.bbox_margin_px)
+            if x2 <= x1 or y2 <= y1:
+                return None
 
         roi = depth_image[y1:y2, x1:x2]
-        valid_mask = np.isfinite(roi) & (roi >= self.min_depth_m) & (roi <= self.max_depth_m)
-        if int(np.count_nonzero(valid_mask)) < self.min_target_points:
+        valid_depth_mask = np.isfinite(roi) & (roi >= self.min_depth_m) & (roi <= self.max_depth_m)
+
+        candidate_mask = valid_depth_mask
+        if detection.has_mask:
+            mask_image = decode_mono8_image(detection.mask)
+            if mask_image is not None and mask_image.shape[:2] == depth_image.shape[:2]:
+                roi_mask = mask_image[y1:y2, x1:x2] > 0
+                candidate_mask = valid_depth_mask & roi_mask
+                if int(np.count_nonzero(candidate_mask)) < self.min_target_points:
+                    candidate_mask = valid_depth_mask
+
+        if int(np.count_nonzero(candidate_mask)) < self.min_target_points:
             return None
 
-        valid_depths = roi[valid_mask]
+        valid_depths = roi[candidate_mask]
         anchor_depth = float(np.percentile(valid_depths, self.depth_percentile_low))
-        target_mask = valid_mask & (roi <= anchor_depth + self.depth_band_m)
+        target_mask = candidate_mask & (roi <= anchor_depth + self.depth_band_m)
         if int(np.count_nonzero(target_mask)) < self.min_target_points:
-            target_mask = valid_mask
+            target_mask = candidate_mask
 
         pixels = np.argwhere(target_mask)
         if pixels.size == 0:

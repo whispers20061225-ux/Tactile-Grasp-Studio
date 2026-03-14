@@ -29,12 +29,17 @@ detector_seg_node:
     detection_result_topic: "/perception/detection_result"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
     enabled: true
-    backend: "disabled"
+    backend: "ultralytics_local"
     backend_url: ""
+    ultralytics_model_path: "yolo11s-seg.pt"
+    ultralytics_device: ""
+    ultralytics_imgsz: 960
     request_timeout_sec: 10.0
     max_inference_rate_hz: 2.0
+    confidence_threshold: 0.25
+    iou_threshold: 0.55
+    candidate_complete_edge_margin_px: 16
     jpeg_quality: 90
-    resize_max_side_px: 1024
     log_interval_sec: 10.0
 
 cloud_filter_node:
@@ -82,7 +87,7 @@ sim_search_sweep_node:
     target_locked_topic: "/sim/perception/target_locked"
     pick_active_topic: "/sim/task/pick_active"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
-    vision_result_topic: "/perception/detection_result"
+    detection_result_topic: "/perception/detection_result"
     joint_state_topic: "/joint_states"
     search_pose_deg: [-87.0, -72.0, 89.0, 89.0, -90.0]
     scan_joint1_angles_deg: [-90.0, -84.0, -78.0, -72.0]
