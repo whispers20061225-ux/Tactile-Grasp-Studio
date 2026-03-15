@@ -184,6 +184,27 @@ def encode_image_to_base64_jpeg(image_rgb: np.ndarray, jpeg_quality: int) -> str
     return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
+def encode_png_base64(image: np.ndarray) -> str:
+    array = np.asarray(image)
+    success, encoded = cv2.imencode(".png", array)
+    if not success:
+        raise ValueError("failed to encode image as PNG")
+    return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def encode_depth_m_to_base64_png(depth_m: np.ndarray) -> str:
+    depth = np.asarray(depth_m, dtype=np.float32)
+    valid_mask = np.isfinite(depth) & (depth > 0.0)
+    depth_mm = np.zeros(depth.shape, dtype=np.uint16)
+    if np.any(valid_mask):
+        depth_mm[valid_mask] = np.clip(
+            np.rint(depth[valid_mask] * 1000.0),
+            0,
+            np.iinfo(np.uint16).max,
+        ).astype(np.uint16)
+    return encode_png_base64(depth_mm)
+
+
 def decode_png_base64_mask(mask_png_b64: str) -> Optional[np.ndarray]:
     try:
         encoded = base64.b64decode(mask_png_b64)
@@ -193,6 +214,17 @@ def decode_png_base64_mask(mask_png_b64: str) -> Optional[np.ndarray]:
     if image is None:
         return None
     return image
+
+
+def decode_png_base64_image(
+    png_b64: str,
+    flags: int = cv2.IMREAD_UNCHANGED,
+) -> Optional[np.ndarray]:
+    try:
+        encoded = base64.b64decode(png_b64)
+    except Exception:  # noqa: BLE001
+        return None
+    return cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), flags)
 
 
 def extract_message_text(payload: dict[str, Any]) -> str:

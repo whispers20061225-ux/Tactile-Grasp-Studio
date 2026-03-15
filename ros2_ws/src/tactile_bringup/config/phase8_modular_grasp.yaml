@@ -71,14 +71,29 @@ grasp_backend_node:
   ros__parameters:
     semantic_task_topic: "/qwen/semantic_task"
     target_cloud_topic: "/perception/target_cloud"
+    detection_result_topic: "/perception/detection_result"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
     candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
-    backend: "disabled"
-    backend_url: ""
+    backend: "contact_graspnet_http"
+    backend_url: "http://127.0.0.1:5001/infer"
     request_timeout_sec: 10.0
+    max_inference_rate_hz: 1.0
+    sensor_stale_sec: 1.5
     max_points: 2048
     min_points_required: 64
     publish_empty_on_failure: false
     default_task_constraint_tag: "pick"
+    contact_graspnet_segmap_id: 1
+    contact_graspnet_local_regions: true
+    contact_graspnet_filter_grasps: true
+    contact_graspnet_skip_border_objects: false
+    contact_graspnet_forward_passes: 1
+    contact_graspnet_z_range: [0.20, 1.80]
+    contact_graspnet_pregrasp_offset_m: 0.06
+    contact_graspnet_max_proposals: 0
+    contact_graspnet_min_mask_pixels: 96
+    contact_graspnet_visualize: false
     log_interval_sec: 8.0
 
 sim_search_sweep_node:
