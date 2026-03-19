@@ -9,6 +9,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
+from std_srvs.srv import Trigger
 from tactile_interfaces.msg import DetectionResult
 from trajectory_msgs.msg import JointTrajectoryPoint
 
@@ -39,6 +40,8 @@ class SimSearchSweepNode(Node):
         self.declare_parameter("candidate_visible_topic", "")
         self.declare_parameter("detection_result_topic", "")
         self.declare_parameter("vision_result_topic", "/qwen/vision_result")
+        self.declare_parameter("auto_start_enabled", True)
+        self.declare_parameter("enable_service", "/task/start_search_sweep")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
             "search_pose_deg",
@@ -89,6 +92,8 @@ class SimSearchSweepNode(Node):
         legacy_vision_result_topic = str(
             self.get_parameter("vision_result_topic").value
         ).strip()
+        self.auto_start_enabled = bool(self.get_parameter("auto_start_enabled").value)
+        self.enable_service = str(self.get_parameter("enable_service").value).strip()
         self.vision_result_topic = detection_result_topic or legacy_vision_result_topic
         self.joint_state_topic = str(self.get_parameter("joint_state_topic").value).strip()
         self.search_pose_deg = [
@@ -178,6 +183,7 @@ class SimSearchSweepNode(Node):
 
         self._locked = False
         self._locked_once = False
+        self._enabled = self.auto_start_enabled
         self._pick_active = False
         self._candidate_visible = False
         self._goal_inflight = False
@@ -203,6 +209,7 @@ class SimSearchSweepNode(Node):
         self._session_point_px: Optional[List[float]] = None
         self._session_bbox_xyxy: Optional[List[float]] = None
         self._session_last_seen_ts = 0.0
+        self._last_centering_log_ts = 0.0
 
         self._trajectory_client = ActionClient(
             self,
@@ -212,6 +219,8 @@ class SimSearchSweepNode(Node):
 
         self.create_subscription(Bool, target_locked_topic, self._on_target_locked, 10)
         self.create_subscription(JointState, self.joint_state_topic, self._on_joint_state, 10)
+        if self.enable_service:
+            self.create_service(Trigger, self.enable_service, self._on_enable_search_sweep)
         if self.pick_active_topic:
             self.create_subscription(Bool, self.pick_active_topic, self._on_pick_active, 10)
         if self.candidate_visible_topic:
@@ -229,9 +238,28 @@ class SimSearchSweepNode(Node):
             f"action={self.trajectory_action_name}, joint1_scan={self.scan_joint1_angles_deg}, "
             f"vision_result_topic={self.vision_result_topic or '<disabled>'}, "
             f"vertical_joint={self.JOINT_NAMES[self.vertical_joint_index]}, "
+            f"auto_start_enabled={self.auto_start_enabled}, "
             f"pick_active_topic={self.pick_active_topic or '<disabled>'}, "
             f"candidate_visible_topic={self.candidate_visible_topic or '<disabled>'}"
         )
+
+    def _on_enable_search_sweep(
+        self, _: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        if self._enabled:
+            response.success = True
+            response.message = "search sweep already enabled"
+            return response
+        self._enabled = True
+        self._locked = False
+        self._locked_once = False
+        self._goal_inflight = False
+        self._scan_index = 0
+        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + self.startup_delay_sec
+        self.get_logger().info("search sweep enabled by external request")
+        response.success = True
+        response.message = "search sweep enabled"
+        return response
 
     def _on_target_locked(self, msg: Bool) -> None:
         was_locked = self._locked
@@ -446,6 +474,8 @@ class SimSearchSweepNode(Node):
 
     def _on_timer(self) -> None:
         now_sec = self.get_clock().now().nanoseconds / 1e9
+        if not self._enabled:
+            return
         if (
             self._locked
             or (self.stop_after_first_lock and self._locked_once)
@@ -677,7 +707,10 @@ class SimSearchSweepNode(Node):
         goal.trajectory.points = [point]
 
         if label.startswith("center target"):
-            self.get_logger().info(label)
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            if (now_sec - self._last_centering_log_ts) >= 2.0:
+                self._last_centering_log_ts = now_sec
+                self.get_logger().info(label)
         self._goal_inflight = True
         self._last_command_pose_deg = list(joint_angles_deg)
         send_future = self._trajectory_client.send_goal_async(goal)

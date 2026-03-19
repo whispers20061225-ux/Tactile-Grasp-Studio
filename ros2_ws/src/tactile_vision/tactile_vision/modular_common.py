@@ -8,6 +8,11 @@ import cv2
 import numpy as np
 from sensor_msgs.msg import Image, PointCloud2, PointField
 
+try:
+    import open3d as o3d
+except Exception:  # noqa: BLE001
+    o3d = None
+
 
 def message_stamp_to_seconds(msg: Image) -> float:
     header = getattr(msg, "header", None)
@@ -141,6 +146,22 @@ def make_mono8_image(mask_u8: np.ndarray, frame_id: str, stamp) -> Image:
     return image
 
 
+def make_rgb8_image(image_rgb: np.ndarray, frame_id: str, stamp) -> Image:
+    image = Image()
+    image.header.frame_id = frame_id
+    image.header.stamp = stamp
+    rgb = np.asarray(image_rgb, dtype=np.uint8)
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        raise ValueError("rgb image must have shape HxWx3")
+    image.height = int(rgb.shape[0])
+    image.width = int(rgb.shape[1])
+    image.encoding = "rgb8"
+    image.is_bigendian = 0
+    image.step = int(rgb.shape[1] * 3)
+    image.data = rgb.tobytes()
+    return image
+
+
 def quaternion_to_rotation_matrix(quat_xyzw: np.ndarray) -> np.ndarray:
     x, y, z, w = quat_xyzw.tolist()
     xx = x * x
@@ -166,10 +187,43 @@ def voxel_downsample(points_xyz: np.ndarray, voxel_size_m: float) -> np.ndarray:
     points = np.asarray(points_xyz, dtype=np.float32).reshape((-1, 3))
     if points.size == 0 or voxel_size_m <= 1e-6:
         return points
+    if o3d is not None:
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+        downsampled = point_cloud.voxel_down_sample(float(voxel_size_m))
+        return np.asarray(downsampled.points, dtype=np.float32)
     quantized = np.floor(points / float(voxel_size_m)).astype(np.int64)
     _, unique_indices = np.unique(quantized, axis=0, return_index=True)
     unique_indices.sort()
     return points[unique_indices]
+
+
+def statistical_outlier_filter(
+    points_xyz: np.ndarray,
+    nb_neighbors: int,
+    std_ratio: float,
+) -> np.ndarray:
+    points = np.asarray(points_xyz, dtype=np.float32).reshape((-1, 3))
+    if (
+        points.size == 0 or
+        o3d is None or
+        int(points.shape[0]) < max(8, int(nb_neighbors) + 1)
+    ):
+        return points
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+    filtered_cloud, _ = point_cloud.remove_statistical_outlier(
+        nb_neighbors=max(4, int(nb_neighbors)),
+        std_ratio=max(0.1, float(std_ratio)),
+    )
+    filtered_points = np.asarray(filtered_cloud.points, dtype=np.float32)
+    if filtered_points.size == 0:
+        return points
+    return filtered_points
+
+
+def open3d_available() -> bool:
+    return o3d is not None
 
 
 def encode_image_to_base64_jpeg(image_rgb: np.ndarray, jpeg_quality: int) -> str:

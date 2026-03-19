@@ -13,6 +13,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tactile_interfaces REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
@@ -26,6 +27,7 @@ ament_target_dependencies(
   rclcpp
   shape_msgs
   std_msgs
+  std_srvs
   tactile_interfaces
   visualization_msgs
 )
@@ -40,6 +42,7 @@ ament_target_dependencies(
   rclcpp
   shape_msgs
   std_msgs
+  std_srvs
   tactile_interfaces
   visualization_msgs
 )

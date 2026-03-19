@@ -50,11 +50,15 @@ def normalize_semantic_result(
     if not isinstance(constraints_raw, list):
         constraints_raw = default_constraints
     constraints = [str(item).strip() for item in constraints_raw if str(item).strip()]
+    normalized_constraints = {item.lower() for item in constraints}
 
     excluded_raw = data.get("excluded_labels", data.get("exclude", []))
     if not isinstance(excluded_raw, list):
         excluded_raw = []
     excluded_labels = [str(item).strip() for item in excluded_raw if str(item).strip()]
+
+    if not target_label and target_hint.lower() in normalized_constraints:
+        target_hint = default_target_hint
 
     confidence_raw = data.get("confidence", data.get("score", 0.0))
     try:
@@ -151,7 +155,7 @@ class QwenSemanticNode(Node):
         self._pending_request = bool(self.auto_infer_on_start)
         self._request_in_flight = False
         self._latest_color_msg: Optional[Image] = None
-        self._last_log_ts = 0.0
+        self._last_terminal_summary = ""
 
         qos_sensor = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -217,23 +221,60 @@ class QwenSemanticNode(Node):
     def _run_inference(self, prompt_override: str, color_msg: Optional[Image]) -> None:
         prompt_text = self._build_prompt_text(prompt_override)
         try:
-            raw_text = self._query_model(prompt_text, color_msg)
-            parsed = extract_first_json_object(raw_text)
-            result = normalize_semantic_result(
-                parsed,
-                default_task=self.default_task,
-                default_target_hint=self.default_target_hint,
-                default_constraints=self.default_constraints,
-                prompt_text=prompt_text,
-                raw_json=raw_text,
-            )
+            if self._should_use_config_defaults(prompt_override, color_msg):
+                result = self._build_default_result(
+                    prompt_text=prompt_text,
+                    reason="using configured default semantic task",
+                )
+            else:
+                raw_text = self._query_model(prompt_text, color_msg)
+                parsed = extract_first_json_object(raw_text)
+                result = normalize_semantic_result(
+                    parsed,
+                    default_task=self.default_task,
+                    default_target_hint=self.default_target_hint,
+                    default_constraints=self.default_constraints,
+                    prompt_text=prompt_text,
+                    raw_json=raw_text,
+                )
             self._publish_result(result)
             self._maybe_log_result(result)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(f"qwen semantic inference failed: {exc}")
+            fallback = self._build_default_result(
+                prompt_text=prompt_text,
+                reason=f"fallback to configured defaults after inference failure: {exc}",
+            )
+            self._publish_result(fallback)
+            self._maybe_log_result(fallback)
         finally:
             with self._request_lock:
                 self._request_in_flight = False
+
+    def _should_use_config_defaults(
+        self,
+        prompt_override: str,
+        color_msg: Optional[Image],
+    ) -> bool:
+        if prompt_override.strip():
+            return False
+        if self.use_visual_context and color_msg is not None:
+            return False
+        return True
+
+    def _build_default_result(self, *, prompt_text: str, reason: str) -> dict[str, Any]:
+        return {
+            "task": self.default_task,
+            "target_label": "",
+            "target_hint": self.default_target_hint,
+            "constraints": list(self.default_constraints),
+            "excluded_labels": [],
+            "confidence": 1.0,
+            "need_human_confirm": False,
+            "reason": reason,
+            "prompt_text": prompt_text,
+            "raw_json": "",
+        }
 
     def _build_prompt_text(self, prompt_override: str) -> str:
         instructions = []
@@ -330,17 +371,16 @@ class QwenSemanticNode(Node):
         self.semantic_task_pub.publish(task_msg)
 
     def _maybe_log_result(self, payload: dict[str, Any]) -> None:
-        now = time.time()
-        if now - self._last_log_ts < self.log_interval_sec:
-            return
-        self._last_log_ts = now
-        self.get_logger().info(
-            "qwen semantic result: "
+        summary = (
+            "semantic decision: "
             f"task={payload.get('task')} "
             f"target_hint={payload.get('target_hint')} "
-            f"confidence={payload.get('confidence')} "
-            f"need_human_confirm={payload.get('need_human_confirm')}"
+            f"need_confirm={payload.get('need_human_confirm')}"
         )
+        if summary == self._last_terminal_summary:
+            return
+        self._last_terminal_summary = summary
+        self.get_logger().info(summary)
 
 
 def main(args=None) -> None:

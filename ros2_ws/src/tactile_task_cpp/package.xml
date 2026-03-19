@@ -15,6 +15,7 @@
   <depend>rclcpp</depend>
   <depend>shape_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tactile_interfaces</depend>
   <depend>visualization_msgs</depend>
 

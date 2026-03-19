@@ -18,6 +18,7 @@ setup(
                 "launch/phase3_control.launch.py",
                 "launch/phase5_task.launch.py",
                 "launch/phase8_modular_grasp.launch.py",
+                "launch/phase8_web_ui.launch.py",
                 "launch/manual_pose_debug.launch.py",
                 "launch/phase6_vision.launch.py",
                 "launch/phase6_sim_base.launch.py",

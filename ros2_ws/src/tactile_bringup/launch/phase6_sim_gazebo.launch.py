@@ -8,6 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     quiet_node_args = ["--ros-args", "--log-level", "warn"]
+    respawn_kwargs = {"respawn": True, "respawn_delay": 2.0}
 
     default_param_file = PathJoinSubstitution(
         [FindPackageShare("tactile_bringup"), "config", "phase6_sim_gazebo.yaml"]
@@ -111,6 +112,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file],
+        **respawn_kwargs,
     )
 
     arm_sim_driver_node = Node(
@@ -120,6 +122,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file],
+        **respawn_kwargs,
     )
 
     arm_control_node = Node(
@@ -129,6 +132,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file],
+        **respawn_kwargs,
     )
 
     demo_task_node = Node(
@@ -138,6 +142,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file],
+        **respawn_kwargs,
     )
 
     tactile_ui_subscriber = Node(
@@ -147,6 +152,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file],
+        **respawn_kwargs,
     )
 
     return LaunchDescription(

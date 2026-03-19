@@ -3,12 +3,15 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     ExecuteProcess,
+    LogInfo,
     RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
+from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import (
     Command,
@@ -24,6 +27,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     quiet_node_args = ["--ros-args", "--log-level", "warn"]
+    node_respawn_kwargs = {"respawn": True, "respawn_delay": 2.0}
 
     default_world = PathJoinSubstitution(
         [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop.world"]
@@ -277,6 +281,26 @@ def generate_launch_description() -> LaunchDescription:
         condition=UnlessCondition(server_use_gpu_accel),
     )
 
+    restart_on_gazebo_server_gpu_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gazebo_server_gpu,
+            on_exit=[
+                LogInfo(msg="gazebo server exited; shutting down launch so the supervisor can restart the full stack"),
+                EmitEvent(event=Shutdown(reason="gazebo server exited")),
+            ],
+        )
+    )
+
+    restart_on_gazebo_server_cpu_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gazebo_server_cpu,
+            on_exit=[
+                LogInfo(msg="gazebo server exited; shutting down launch so the supervisor can restart the full stack"),
+                EmitEvent(event=Shutdown(reason="gazebo server exited")),
+            ],
+        )
+    )
+
     gazebo_gui_gpu = ExecuteProcess(
         cmd=[
             FindExecutable(name="gz"),
@@ -344,6 +368,7 @@ def generate_launch_description() -> LaunchDescription:
                 "use_sim_time": use_sim_time,
             }
         ],
+        **node_respawn_kwargs,
     )
 
     spawn_entity = Node(
@@ -379,6 +404,7 @@ def generate_launch_description() -> LaunchDescription:
             ["/world/", world_name, "/clock:=/clock"],
         ],
         condition=IfCondition(bridge_clock),
+        **node_respawn_kwargs,
     )
 
     camera_bridge = Node(
@@ -395,6 +421,7 @@ def generate_launch_description() -> LaunchDescription:
             ("/camera_info", ros_camera_info_topic),
         ],
         condition=IfCondition(bridge_camera),
+        **node_respawn_kwargs,
     )
 
     depth_bridge = Node(
@@ -409,6 +436,7 @@ def generate_launch_description() -> LaunchDescription:
             ("/camera_depth", "/sim/camera/depth/image_raw"),
         ],
         condition=IfCondition(bridge_depth),
+        **node_respawn_kwargs,
     )
 
     imu_bridge = Node(
@@ -423,6 +451,7 @@ def generate_launch_description() -> LaunchDescription:
             ("/camera_imu", "/sim/camera/imu"),
         ],
         condition=IfCondition(bridge_imu),
+        **node_respawn_kwargs,
     )
 
     sim_realsense_adapter = Node(
@@ -452,6 +481,7 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         condition=IfCondition(start_realsense_adapter),
+        **node_respawn_kwargs,
     )
 
     spawner_joint_state = Node(
@@ -543,6 +573,8 @@ def generate_launch_description() -> LaunchDescription:
             set_ign_resource_path,
             gazebo_server_gpu,
             gazebo_server_cpu,
+            restart_on_gazebo_server_gpu_exit,
+            restart_on_gazebo_server_cpu_exit,
             delayed_gazebo_gui,
             clock_bridge,
             delayed_robot_pipeline,

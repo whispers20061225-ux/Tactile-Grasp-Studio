@@ -12,6 +12,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 def generate_launch_description() -> LaunchDescription:
     quiet_node_args = ["--ros-args", "--log-level", "error"]
+    respawn_kwargs = {"respawn": True, "respawn_delay": 2.0}
 
     default_world = PathJoinSubstitution(
         [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop_camera_gui.world"]
@@ -156,6 +157,7 @@ def generate_launch_description() -> LaunchDescription:
             },
         ],
         additional_env={"DISPLAY": os.environ.get("DISPLAY", "")},
+        **respawn_kwargs,
     )
 
     rviz_node = Node(
@@ -171,6 +173,7 @@ def generate_launch_description() -> LaunchDescription:
             },
         ],
         condition=IfCondition(start_rviz),
+        **respawn_kwargs,
     )
 
     delayed_moveit_stack = TimerAction(
@@ -191,6 +194,7 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         condition=IfCondition(start_search_demo),
+        **respawn_kwargs,
     )
 
     search_sweep_node = Node(
@@ -204,6 +208,7 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         condition=IfCondition(start_search_demo),
+        **respawn_kwargs,
     )
 
     delayed_search_demo = TimerAction(
@@ -225,6 +230,7 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         condition=IfCondition(start_pick_demo),
+        **respawn_kwargs,
     )
 
     delayed_pick_demo = TimerAction(

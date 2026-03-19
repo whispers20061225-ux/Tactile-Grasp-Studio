@@ -30,6 +30,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tactile_interfaces/msg/grasp_proposal_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -144,6 +146,9 @@ private:
     this->declare_parameter<std::string>("target_pose_topic", "/sim/perception/target_pose");
     this->declare_parameter<std::string>("target_locked_topic", "/sim/perception/target_locked");
     this->declare_parameter<std::string>("pick_active_topic", "/sim/task/pick_active");
+    this->declare_parameter<std::string>("pick_status_topic", "/sim/task/pick_status");
+    this->declare_parameter<std::string>("execute_pick_service", "/task/execute_pick");
+    this->declare_parameter<std::string>("reset_pick_session_service", "/task/reset_pick_session");
     this->declare_parameter<std::string>("selected_pregrasp_pose_topic", "/grasp/selected_pregrasp_pose");
     this->declare_parameter<std::string>("selected_grasp_pose_topic", "/grasp/selected_grasp_pose");
     this->declare_parameter<std::string>("external_pregrasp_pose_array_topic", "/grasp/candidate_pregrasp_poses");
@@ -211,12 +216,17 @@ private:
     this->declare_parameter<double>("external_grasp_pose_timeout_sec", 3.0);
     this->declare_parameter<double>("external_semantic_score_weight", 0.8);
     this->declare_parameter<double>("external_confidence_score_weight", 0.6);
+    this->declare_parameter<bool>("include_target_collision_object", false);
+    this->declare_parameter<bool>("require_user_confirmation", false);
     this->declare_parameter<std::vector<double>>("table_size_m", {1.0, 0.8, 0.04});
     this->declare_parameter<std::vector<double>>("table_pose_xyz", {0.5, 0.0, 0.38});
 
     target_pose_topic_ = this->get_parameter("target_pose_topic").as_string();
     target_locked_topic_ = this->get_parameter("target_locked_topic").as_string();
     pick_active_topic_ = this->get_parameter("pick_active_topic").as_string();
+    pick_status_topic_ = this->get_parameter("pick_status_topic").as_string();
+    execute_pick_service_ = this->get_parameter("execute_pick_service").as_string();
+    reset_pick_session_service_ = this->get_parameter("reset_pick_session_service").as_string();
     selected_pregrasp_pose_topic_ =
       this->get_parameter("selected_pregrasp_pose_topic").as_string();
     selected_grasp_pose_topic_ =
@@ -326,6 +336,10 @@ private:
       this->get_parameter("external_semantic_score_weight").as_double();
     external_confidence_score_weight_ =
       this->get_parameter("external_confidence_score_weight").as_double();
+    include_target_collision_object_ =
+      this->get_parameter("include_target_collision_object").as_bool();
+    require_user_confirmation_ =
+      this->get_parameter("require_user_confirmation").as_bool();
     table_size_m_ = this->get_parameter("table_size_m").as_double_array();
     table_pose_xyz_ = this->get_parameter("table_pose_xyz").as_double_array();
 
@@ -347,6 +361,14 @@ private:
         target_locked_ = msg->data;
         if (target_locked_) {
           try_arm_pick_session();
+        } else if (!executing_.load() && !completed_.load()) {
+          pick_armed_ = false;
+          {
+            std::scoped_lock<std::mutex> lock(target_mutex_);
+            has_latched_target_pose_ = false;
+          }
+          publish_pick_active();
+          publish_pick_status("idle", "target lock released");
         }
       });
 
@@ -376,7 +398,7 @@ private:
       [this](const geometry_msgs::msg::PoseArray::SharedPtr msg) {
         std::scoped_lock<std::mutex> lock(grasp_candidate_mutex_);
         latest_external_pregrasp_pose_array_ = *msg;
-        has_external_pregrasp_pose_array_ = true;
+        has_external_pregrasp_pose_array_ = !msg->poses.empty();
         latest_external_grasp_update_sec_ = this->get_clock()->now().seconds();
       });
 
@@ -386,7 +408,7 @@ private:
       [this](const geometry_msgs::msg::PoseArray::SharedPtr msg) {
         std::scoped_lock<std::mutex> lock(grasp_candidate_mutex_);
         latest_external_grasp_pose_array_ = *msg;
-        has_external_grasp_pose_array_ = true;
+        has_external_grasp_pose_array_ = !msg->poses.empty();
         latest_external_grasp_update_sec_ = this->get_clock()->now().seconds();
       });
 
@@ -396,15 +418,95 @@ private:
       [this](const tactile_interfaces::msg::GraspProposalArray::SharedPtr msg) {
         std::scoped_lock<std::mutex> lock(grasp_candidate_mutex_);
         latest_external_grasp_proposal_array_ = *msg;
-        has_external_grasp_proposal_array_ = true;
+        has_external_grasp_proposal_array_ = !msg->proposals.empty();
         latest_external_grasp_update_sec_ = this->get_clock()->now().seconds();
       });
 
     pick_active_pub_ = this->create_publisher<std_msgs::msg::Bool>(pick_active_topic_, 10);
+    pick_status_pub_ = this->create_publisher<std_msgs::msg::String>(pick_status_topic_, latched_qos);
     execution_debug_markers_pub_ =
       this->create_publisher<visualization_msgs::msg::MarkerArray>(
       execution_debug_markers_topic_, latched_qos);
+    execute_pick_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      execute_pick_service_,
+      [this](
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+      {
+        if (executing_.load()) {
+          response->success = false;
+          response->message = "pick sequence is already executing";
+          return;
+        }
+        if (pick_armed_.load()) {
+          response->success = true;
+          response->message = "pick sequence is already armed";
+          return;
+        }
+        if (!target_locked_) {
+          response->success = false;
+          response->message = "target is not locked";
+          publish_pick_status("idle", response->message);
+          return;
+        }
+
+        geometry_msgs::msg::PoseStamped target_pose;
+        {
+          std::scoped_lock<std::mutex> lock(target_mutex_);
+          if (!has_target_pose_) {
+            response->success = false;
+            response->message = "target pose is unavailable";
+            publish_pick_status("idle", response->message);
+            return;
+          }
+          latched_target_pose_ = latest_target_pose_;
+          has_latched_target_pose_ = true;
+          target_pose = latched_target_pose_;
+        }
+
+        pick_armed_ = true;
+        completed_ = false;
+        publish_pick_active();
+        publish_pick_status(
+          "planning",
+          "execute requested; waiting for external candidates and planning");
+        response->success = true;
+        std::ostringstream message;
+        message << "pick armed from latched target pose ("
+                << std::fixed << std::setprecision(3)
+                << target_pose.pose.position.x << ", "
+                << target_pose.pose.position.y << ", "
+                << target_pose.pose.position.z << ")";
+        response->message = message.str();
+      });
+    reset_pick_session_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      reset_pick_session_service_,
+      [this](
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+      {
+        clear_locked_joint_references();
+        pick_armed_ = false;
+        executing_ = false;
+        completed_ = false;
+        {
+          std::scoped_lock<std::mutex> lock(target_mutex_);
+          has_latched_target_pose_ = false;
+        }
+        publish_pick_active();
+        if (target_locked_) {
+          try_arm_pick_session();
+          response->message = "pick session reset; waiting for explicit execute";
+        } else {
+          publish_pick_status("idle", "pick session reset");
+          response->message = "pick session reset";
+        }
+        response->success = true;
+      });
     publish_pick_active();
+    publish_pick_status(
+      "idle",
+      "waiting for target lock and explicit execute");
 
     check_timer_ = this->create_wall_timer(
       300ms,
@@ -413,6 +515,17 @@ private:
           moveit_ready_ && pick_armed_.load() && has_latched_target_pose_ &&
           !executing_.load() && !completed_.load())
         {
+          if (require_external_grasp_candidates_) {
+            double age_sec = -1.0;
+            std::size_t candidate_count = 0;
+            if (!has_fresh_external_grasp_candidates(&age_sec, &candidate_count)) {
+              RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 3000,
+                "waiting for external grasp candidates: count=%zu age=%.2fs timeout=%.2fs",
+                candidate_count, age_sec, external_grasp_pose_timeout_sec_);
+              return;
+            }
+          }
           pick_armed_ = false;
           executing_ = true;
           publish_pick_active();
@@ -457,7 +570,7 @@ private:
     gripper_group_->allowReplanning(true);
 
     moveit_ready_ = true;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
       "MoveIt clients ready: arm_group=%s gripper_group=%s ee_link=%s vel=%.2f acc=%.2f keep_orientation=%s tol=%.2f debug_stop_after_pregrasp=%s lock_joint=%s enabled=%s delta=%.1f relaxed=%.1f wrist_joint=%s enabled=%s delta=%.1f relaxed=%.1f",
       arm_group_name_.c_str(), gripper_group_name_.c_str(), ee_link_.c_str(),
@@ -472,11 +585,59 @@ private:
       wrist_joint_max_delta_deg_, wrist_joint_relaxed_delta_deg_);
   }
 
+  static std::string escape_json_string(const std::string & value)
+  {
+    std::ostringstream escaped;
+    for (const char ch : value) {
+      switch (ch) {
+        case '\\':
+          escaped << "\\\\";
+          break;
+        case '"':
+          escaped << "\\\"";
+          break;
+        case '\n':
+          escaped << "\\n";
+          break;
+        case '\r':
+          escaped << "\\r";
+          break;
+        case '\t':
+          escaped << "\\t";
+          break;
+        default:
+          escaped << ch;
+          break;
+      }
+    }
+    return escaped.str();
+  }
+
   void publish_pick_active()
   {
     std_msgs::msg::Bool msg;
     msg.data = pick_armed_.load() || executing_.load() || completed_.load();
     pick_active_pub_->publish(msg);
+  }
+
+  void publish_pick_status(const std::string & phase, const std::string & message)
+  {
+    std_msgs::msg::String msg;
+    std::ostringstream payload;
+    payload << "{"
+            << "\"phase\":\"" << escape_json_string(phase) << "\","
+            << "\"message\":\"" << escape_json_string(message) << "\","
+            << "\"require_user_confirmation\":"
+            << (require_user_confirmation_ ? "true" : "false") << ","
+            << "\"target_locked\":" << (target_locked_ ? "true" : "false") << ","
+            << "\"pick_armed\":" << (pick_armed_.load() ? "true" : "false") << ","
+            << "\"executing\":" << (executing_.load() ? "true" : "false") << ","
+            << "\"completed\":" << (completed_.load() ? "true" : "false") << ","
+            << "\"has_latched_target_pose\":"
+            << (has_latched_target_pose_ ? "true" : "false")
+            << "}";
+    msg.data = payload.str();
+    pick_status_pub_->publish(msg);
   }
 
   void run_pick_sequence()
@@ -492,14 +653,15 @@ private:
       target_pose.pose.position.x,
       target_pose.pose.position.y,
       target_pose.pose.position.z);
+    publish_pick_status("planning", "planning grasp sequence from latched target pose");
 
     capture_locked_joint_references();
 
-    apply_scene(target_pose, true);
+    apply_scene(target_pose, include_target_collision_object_);
     std::this_thread::sleep_for(300ms);
 
     const auto current_pose = arm_group_->getCurrentPose(ee_link_).pose;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
       "current ee pose before pick: (%.3f, %.3f, %.3f)",
       current_pose.position.x,
@@ -534,7 +696,7 @@ private:
       pregrasp_option.external_semantic_score,
       pregrasp_option.external_confidence_score,
       pregrasp_option.external_proposal_bonus);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
       "selected candidate %zu penalties: camera=%.2f camera_bonus=%.2f joint1_excursion=%.2f joint2_excursion=%.2f wrist_excursion=%.2f",
       pregrasp_option.candidate_index,
@@ -545,7 +707,7 @@ private:
       pregrasp_option.wrist_joint_excursion_cost);
     if (pregrasp_option.external_metadata.has_value()) {
       const auto & metadata = pregrasp_option.external_metadata.value();
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         this->get_logger(),
         "selected candidate %zu contact_pair: p1=(%.3f, %.3f, %.3f) p2=(%.3f, %.3f, %.3f) width=%.3f task_tag=%s",
         pregrasp_option.candidate_index,
@@ -559,6 +721,9 @@ private:
       this->get_logger(),
       "executing selected candidate %zu with live replanning between phases",
       pregrasp_option.candidate_index);
+    publish_pick_status(
+      "executing",
+      "executing selected stage, pregrasp, grasp, retreat, and lift");
 
     if (!execute_stage_position_target_with_gripper_open(
           pregrasp_option.stage, pregrasp_option.stage_orientation, pregrasp_option.stage_label))
@@ -567,7 +732,7 @@ private:
     }
 
     const auto post_stage_pose = arm_group_->getCurrentPose(ee_link_).pose;
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
       "post-stage ee pose: (%.3f, %.3f, %.3f)",
       post_stage_pose.position.x,
@@ -587,6 +752,7 @@ private:
       executing_ = false;
       completed_ = true;
       publish_pick_active();
+      publish_pick_status("completed", "debug stop enabled at pregrasp");
       RCLCPP_WARN(
         this->get_logger(),
         "debug stop enabled: holding at pregrasp and skipping grasp/close/retreat/lift");
@@ -603,7 +769,7 @@ private:
       pregrasp_option.pregrasp[2] + lift_distance_m_,
     };
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
       "selected pregrasp=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f) retreat=(%.3f, %.3f, %.3f) lift=(%.3f, %.3f, %.3f)",
       pregrasp_option.pregrasp[0], pregrasp_option.pregrasp[1], pregrasp_option.pregrasp[2],
@@ -639,6 +805,7 @@ private:
     completed_ = true;
     executing_ = false;
     publish_pick_active();
+    publish_pick_status("completed", "pick sequence completed");
     RCLCPP_INFO(this->get_logger(), "pick sequence completed");
   }
 
@@ -713,7 +880,7 @@ private:
       ++stage_success_count;
 
       const auto post_stage_pose = arm_group_->getCurrentPose(ee_link_).pose;
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         this->get_logger(),
         "ranked candidate %zu post-stage ee pose: (%.3f, %.3f, %.3f)",
         rank,
@@ -829,7 +996,7 @@ private:
       {waypoint}, 0.01, trajectory, true, &error_code);
 
     if (fraction < 0.98) {
-      RCLCPP_WARN(
+      RCLCPP_DEBUG(
         this->get_logger(),
         "%s: cartesian path fraction %.2f, falling back to sampled planning",
         label.c_str(), fraction);
@@ -838,11 +1005,11 @@ private:
 
     const bool executed = static_cast<bool>(arm_group_->execute(trajectory));
     if (!executed) {
-      RCLCPP_WARN(this->get_logger(), "%s: cartesian execution failed", label.c_str());
+      RCLCPP_DEBUG(this->get_logger(), "%s: cartesian execution failed", label.c_str());
       return execute_position_target(target_point, target_orientation, label + " fallback");
     }
 
-    RCLCPP_INFO(this->get_logger(), "%s: cartesian success", label.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "%s: cartesian success", label.c_str());
     return true;
   }
 
@@ -857,11 +1024,11 @@ private:
 
     const bool executed = static_cast<bool>(arm_group_->execute(plan));
     if (!executed) {
-      RCLCPP_WARN(this->get_logger(), "%s: execution failed", label.c_str());
+      RCLCPP_DEBUG(this->get_logger(), "%s: execution failed", label.c_str());
       return false;
     }
 
-    RCLCPP_INFO(this->get_logger(), "%s: success", label.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "%s: success", label.c_str());
     return true;
   }
 
@@ -941,24 +1108,21 @@ private:
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     const bool planned = static_cast<bool>(group.plan(plan));
     if (!planned) {
-      RCLCPP_WARN(this->get_logger(), "%s: planning failed", label.c_str());
+      RCLCPP_DEBUG(this->get_logger(), "%s: planning failed", label.c_str());
       return false;
     }
     const bool executed = static_cast<bool>(group.execute(plan));
     if (!executed) {
-      RCLCPP_WARN(this->get_logger(), "%s: execution failed", label.c_str());
+      RCLCPP_DEBUG(this->get_logger(), "%s: execution failed", label.c_str());
       return false;
     }
-    RCLCPP_INFO(this->get_logger(), "%s: success", label.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "%s: success", label.c_str());
     return true;
   }
 
   void apply_scene(const geometry_msgs::msg::PoseStamped & target_pose, bool include_target)
   {
     std::vector<moveit_msgs::msg::CollisionObject> objects;
-
-    const double table_top_z =
-      target_pose.pose.position.z - (target_height_m_ * 0.5);
 
     moveit_msgs::msg::CollisionObject table;
     table.id = "sim_table";
@@ -973,9 +1137,17 @@ private:
     };
     geometry_msgs::msg::Pose table_pose;
     table_pose.orientation.w = 1.0;
-    table_pose.position.x = target_pose.pose.position.x + 0.05;
-    table_pose.position.y = target_pose.pose.position.y;
-    table_pose.position.z = table_top_z - (table_size_m_[2] * 0.5);
+    if (table_pose_xyz_.size() >= 3) {
+      table_pose.position.x = table_pose_xyz_[0];
+      table_pose.position.y = table_pose_xyz_[1];
+      table_pose.position.z = table_pose_xyz_[2];
+    } else {
+      const double table_top_z =
+        target_pose.pose.position.z - (target_height_m_ * 0.5);
+      table_pose.position.x = target_pose.pose.position.x + 0.05;
+      table_pose.position.y = target_pose.pose.position.y;
+      table_pose.position.z = table_top_z - (table_size_m_[2] * 0.5);
+    }
     table.primitives.push_back(table_primitive);
     table.primitive_poses.push_back(table_pose);
     objects.push_back(table);
@@ -999,16 +1171,47 @@ private:
     }
 
     planning_scene_interface_->applyCollisionObjects(objects);
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       this->get_logger(),
-      "planning scene updated: table + %s target",
-      include_target ? "detected" : "no");
+      "planning scene updated: table=(%.3f, %.3f, %.3f) include_target=%s",
+      table_pose.position.x,
+      table_pose.position.y,
+      table_pose.position.z,
+      include_target ? "true" : "false");
+  }
+
+  bool has_fresh_external_grasp_candidates(
+    double * age_sec_out = nullptr,
+    std::size_t * candidate_count_out = nullptr)
+  {
+    std::scoped_lock<std::mutex> lock(grasp_candidate_mutex_);
+    const double age_sec =
+      this->get_clock()->now().seconds() - latest_external_grasp_update_sec_;
+    std::size_t candidate_count = 0;
+    if (has_external_grasp_proposal_array_) {
+      candidate_count += latest_external_grasp_proposal_array_.proposals.size();
+    }
+    if (has_external_pregrasp_pose_array_ && has_external_grasp_pose_array_) {
+      candidate_count += std::min(
+        latest_external_pregrasp_pose_array_.poses.size(),
+        latest_external_grasp_pose_array_.poses.size());
+    }
+    if (has_selected_pregrasp_pose_ && has_selected_grasp_pose_) {
+      candidate_count += 1U;
+    }
+    if (age_sec_out != nullptr) {
+      *age_sec_out = age_sec;
+    }
+    if (candidate_count_out != nullptr) {
+      *candidate_count_out = candidate_count;
+    }
+    return candidate_count > 0U && age_sec <= external_grasp_pose_timeout_sec_;
   }
 
   void remove_target_from_scene()
   {
     planning_scene_interface_->removeCollisionObjects({"sim_target"});
-    RCLCPP_INFO(this->get_logger(), "removed target collision object to allow contact");
+    RCLCPP_DEBUG(this->get_logger(), "removed target collision object to allow contact");
   }
 
   void set_bounded_start_state(moveit::planning_interface::MoveGroupInterface & group)
@@ -1038,6 +1241,7 @@ private:
     completed_ = false;
     has_latched_target_pose_ = false;
     publish_pick_active();
+    publish_pick_status("error", reason);
     RCLCPP_WARN(this->get_logger(), "pick sequence aborted: %s", reason.c_str());
   }
 
@@ -1307,11 +1511,18 @@ private:
       target_pose = latched_target_pose_;
     }
 
-    pick_armed_ = true;
     publish_pick_active();
+    if (!require_user_confirmation_) {
+      RCLCPP_WARN_ONCE(
+        this->get_logger(),
+        "automatic pick arming on target lock is disabled; waiting for explicit execute command");
+    }
+    publish_pick_status(
+      "waiting_execute",
+      "target locked; waiting for explicit execute command");
     RCLCPP_INFO(
       this->get_logger(),
-      "latched target pose for pick session: (%.3f, %.3f, %.3f)",
+      "latched target pose for manual-confirm pick session: (%.3f, %.3f, %.3f)",
       target_pose.pose.position.x,
       target_pose.pose.position.y,
       target_pose.pose.position.z);
@@ -2385,7 +2596,7 @@ private:
               };
             }
 
-            RCLCPP_INFO(
+            RCLCPP_DEBUG(
               this->get_logger(),
               "%s feasible: variant=%s score=%.2f base=%.2f semantic=%.2f confidence=%.2f bonus=%.2f stage=(%.3f, %.3f, %.3f) pregrasp=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f)",
               candidate_label.c_str(),
@@ -2422,7 +2633,7 @@ private:
           } else {
             debug_info.status = "not executable";
           }
-          RCLCPP_WARN(
+          RCLCPP_DEBUG(
             this->get_logger(),
             "%s rejected: stage_plan_fail=%zu stage_end_state_fail=%zu pregrasp_plan_fail=%zu pregrasp_end_state_fail=%zu",
             candidate_label.c_str(),
@@ -2803,6 +3014,9 @@ private:
   std::string target_pose_topic_;
   std::string target_locked_topic_;
   std::string pick_active_topic_;
+  std::string pick_status_topic_;
+  std::string execute_pick_service_;
+  std::string reset_pick_session_service_;
   std::string selected_pregrasp_pose_topic_;
   std::string selected_grasp_pose_topic_;
   std::string external_pregrasp_pose_array_topic_;
@@ -2870,6 +3084,8 @@ private:
   double external_grasp_pose_timeout_sec_{3.0};
   double external_semantic_score_weight_{0.8};
   double external_confidence_score_weight_{0.6};
+  bool include_target_collision_object_{false};
+  bool require_user_confirmation_{false};
   std::vector<double> table_size_m_;
   std::vector<double> table_pose_xyz_;
 
@@ -2885,7 +3101,10 @@ private:
   rclcpp::Subscription<tactile_interfaces::msg::GraspProposalArray>::SharedPtr
     external_grasp_proposal_array_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pick_active_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pick_status_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr execution_debug_markers_pub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr execute_pick_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_pick_session_srv_;
   rclcpp::TimerBase::SharedPtr check_timer_;
 
   std::mutex target_mutex_;

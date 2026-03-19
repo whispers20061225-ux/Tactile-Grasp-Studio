@@ -1,26 +1,30 @@
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from typing import Optional
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import Bool, String
-from tactile_interfaces.msg import DetectionResult
+from tactile_interfaces.msg import DetectionResult, SemanticTask
 from tf2_ros import Buffer, TransformException, TransformListener
+from visualization_msgs.msg import Marker
 
 from tactile_vision.modular_common import (
     compact_json,
     decode_depth_image,
     decode_mono8_image,
     make_xyz_cloud,
+    open3d_available,
     quaternion_to_rotation_matrix,
+    statistical_outlier_filter,
     voxel_downsample,
 )
 
@@ -37,8 +41,10 @@ class CloudFilterNode(Node):
             "camera_info_topic", "/camera/camera/aligned_depth_to_color/camera_info"
         )
         self.declare_parameter("target_cloud_topic", "/perception/target_cloud")
+        self.declare_parameter("target_cloud_markers_topic", "/perception/target_cloud_markers")
         self.declare_parameter("target_pose_topic", "/sim/perception/target_pose")
         self.declare_parameter("target_locked_topic", "/sim/perception/target_locked")
+        self.declare_parameter("semantic_task_topic", "/qwen/semantic_task")
         self.declare_parameter(
             "candidate_visible_topic", "/sim/perception/target_candidate_visible"
         )
@@ -54,16 +60,25 @@ class CloudFilterNode(Node):
         self.declare_parameter("depth_percentile_low", 30.0)
         self.declare_parameter("depth_band_m", 0.05)
         self.declare_parameter("voxel_size_m", 0.004)
+        self.declare_parameter("open3d_remove_outliers", True)
+        self.declare_parameter("open3d_outlier_nb_neighbors", 16)
+        self.declare_parameter("open3d_outlier_std_ratio", 1.5)
+        self.declare_parameter("visual_republish_rate_hz", 8.0)
         self.declare_parameter("stable_frames_required", 2)
         self.declare_parameter("lock_position_tol_m", 0.03)
+        self.declare_parameter("require_semantic_task_to_lock", False)
         self.declare_parameter("log_interval_sec", 8.0)
 
         self.detection_result_topic = str(self.get_parameter("detection_result_topic").value)
         self.depth_topic = str(self.get_parameter("depth_topic").value)
         self.camera_info_topic = str(self.get_parameter("camera_info_topic").value)
         self.target_cloud_topic = str(self.get_parameter("target_cloud_topic").value)
+        self.target_cloud_markers_topic = str(
+            self.get_parameter("target_cloud_markers_topic").value
+        )
         self.target_pose_topic = str(self.get_parameter("target_pose_topic").value)
         self.target_locked_topic = str(self.get_parameter("target_locked_topic").value)
+        self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
         self.candidate_visible_topic = str(self.get_parameter("candidate_visible_topic").value)
         self.debug_topic = str(self.get_parameter("debug_topic").value)
         self.target_frame = str(self.get_parameter("target_frame").value)
@@ -81,11 +96,26 @@ class CloudFilterNode(Node):
         )
         self.depth_band_m = max(0.002, float(self.get_parameter("depth_band_m").value))
         self.voxel_size_m = max(0.0, float(self.get_parameter("voxel_size_m").value))
+        self.open3d_remove_outliers = bool(
+            self.get_parameter("open3d_remove_outliers").value
+        )
+        self.open3d_outlier_nb_neighbors = max(
+            4, int(self.get_parameter("open3d_outlier_nb_neighbors").value)
+        )
+        self.open3d_outlier_std_ratio = max(
+            0.1, float(self.get_parameter("open3d_outlier_std_ratio").value)
+        )
+        self.visual_republish_rate_hz = max(
+            0.2, float(self.get_parameter("visual_republish_rate_hz").value)
+        )
         self.stable_frames_required = max(
             1, int(self.get_parameter("stable_frames_required").value)
         )
         self.lock_position_tol_m = max(
             0.001, float(self.get_parameter("lock_position_tol_m").value)
+        )
+        self.require_semantic_task_to_lock = bool(
+            self.get_parameter("require_semantic_task_to_lock").value
         )
         self.log_interval_sec = max(1.0, float(self.get_parameter("log_interval_sec").value))
 
@@ -97,7 +127,12 @@ class CloudFilterNode(Node):
         self._latest_camera_info: Optional[CameraInfo] = None
         self._last_world_position: Optional[np.ndarray] = None
         self._stable_count = 0
-        self._last_log_ts = 0.0
+        self._last_lock_state = False
+        self._last_reset_reason = ""
+        self._last_summary = ""
+        self._last_target_cloud_points: Optional[np.ndarray] = None
+        self._last_target_pose_position: Optional[np.ndarray] = None
+        self._semantic_task_active = not self.require_semantic_task_to_lock
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
 
@@ -111,9 +146,18 @@ class CloudFilterNode(Node):
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
         )
+        qos_latched = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
 
         self.create_subscription(
             DetectionResult, self.detection_result_topic, self._on_detection_result, qos_reliable
+        )
+        self.create_subscription(
+            SemanticTask, self.semantic_task_topic, self._on_semantic_task, qos_reliable
         )
         self.create_subscription(Image, self.depth_topic, self._on_depth_image, qos_sensor)
         self.create_subscription(
@@ -121,10 +165,13 @@ class CloudFilterNode(Node):
         )
 
         self.target_cloud_pub = self.create_publisher(
-            PointCloud2, self.target_cloud_topic, qos_reliable
+            PointCloud2, self.target_cloud_topic, qos_latched
+        )
+        self.target_cloud_marker_pub = self.create_publisher(
+            Marker, self.target_cloud_markers_topic, qos_latched
         )
         self.target_pose_pub = self.create_publisher(
-            PoseStamped, self.target_pose_topic, qos_reliable
+            PoseStamped, self.target_pose_topic, qos_latched
         )
         self.target_locked_pub = self.create_publisher(
             Bool, self.target_locked_topic, qos_reliable
@@ -134,17 +181,27 @@ class CloudFilterNode(Node):
         )
         self.debug_pub = self.create_publisher(String, self.debug_topic, qos_reliable)
         self.create_timer(1.0 / self.publish_rate_hz, self._process_latest)
+        self.create_timer(1.0 / self.visual_republish_rate_hz, self._republish_last_visuals)
 
         self.get_logger().info(
             "cloud_filter_node started: "
             f"detection={self.detection_result_topic}, target_cloud={self.target_cloud_topic}, "
-            f"target_pose={self.target_pose_topic}, target_frame={self.target_frame}"
+            f"target_pose={self.target_pose_topic}, target_frame={self.target_frame}, "
+            f"open3d_available={open3d_available()}"
         )
 
     def _on_detection_result(self, msg: DetectionResult) -> None:
         with self._detection_lock:
             self._latest_detection = msg
             self._latest_detection_ts = time.time()
+
+    def _on_semantic_task(self, msg: SemanticTask) -> None:
+        self._semantic_task_active = bool(
+            str(msg.prompt_text or "").strip()
+            or str(msg.target_label or "").strip()
+            or str(msg.target_hint or "").strip()
+            or str(msg.task or "").strip()
+        )
 
     def _on_depth_image(self, msg: Image) -> None:
         with self._sensor_lock:
@@ -185,6 +242,15 @@ class CloudFilterNode(Node):
             return
 
         points_world = voxel_downsample(points_world, self.voxel_size_m)
+        if self.open3d_remove_outliers:
+            points_world = statistical_outlier_filter(
+                points_world,
+                self.open3d_outlier_nb_neighbors,
+                self.open3d_outlier_std_ratio,
+            )
+        if points_world.shape[0] < self.min_target_points:
+            self._reset_state("insufficient_target_points_after_filter")
+            return
         centroid = np.mean(points_world, axis=0)
         if self._last_world_position is None:
             self._stable_count = 1
@@ -194,9 +260,13 @@ class CloudFilterNode(Node):
             self._stable_count = 1
         self._last_world_position = centroid
         locked = bool(self._stable_count >= self.stable_frames_required)
+        if self.require_semantic_task_to_lock and not self._semantic_task_active:
+            locked = False
 
-        self.target_cloud_pub.publish(
-            make_xyz_cloud(points_world, self.target_frame, depth_msg.header.stamp)
+        cloud_msg = make_xyz_cloud(points_world, self.target_frame, depth_msg.header.stamp)
+        self.target_cloud_pub.publish(cloud_msg)
+        self.target_cloud_marker_pub.publish(
+            self._make_target_cloud_marker(points_world, depth_msg.header.stamp)
         )
         pose_msg = PoseStamped()
         pose_msg.header.stamp = depth_msg.header.stamp
@@ -206,6 +276,8 @@ class CloudFilterNode(Node):
         pose_msg.pose.position.z = float(centroid[2])
         pose_msg.pose.orientation.w = 1.0
         self.target_pose_pub.publish(pose_msg)
+        self._last_target_cloud_points = points_world.astype(np.float32, copy=True)
+        self._last_target_pose_position = centroid.astype(np.float32, copy=True)
         self.target_locked_pub.publish(Bool(data=locked))
         self.candidate_visible_pub.publish(Bool(data=True))
 
@@ -213,6 +285,7 @@ class CloudFilterNode(Node):
         debug_msg.data = compact_json(
             {
                 "status": "ok",
+                "target_label": str(detection.target_label or ""),
                 "target_points": int(points_world.shape[0]),
                 "centroid_xyz": [
                     round(float(centroid[0]), 4),
@@ -222,18 +295,24 @@ class CloudFilterNode(Node):
                 "locked": locked,
                 "stable_count": int(self._stable_count),
                 "mask_used": bool(detection.has_mask),
+                "open3d_filtered": bool(self.open3d_remove_outliers and open3d_available()),
             }
         )
         self.debug_pub.publish(debug_msg)
-
-        now = time.time()
-        if now - self._last_log_ts >= self.log_interval_sec:
-            self._last_log_ts = now
+        summary_key = (
+            str(detection.target_label or "<none>"),
+            bool(locked),
+        )
+        if locked != self._last_lock_state or str(summary_key) != self._last_summary:
+            self._last_summary = str(summary_key)
+            self._last_lock_state = locked
+            self._last_reset_reason = ""
             self.get_logger().info(
-                "cloud filter result: "
-                f"points={points_world.shape[0]} "
+                "target tracking decision: "
+                f"label={str(detection.target_label or '<none>')} "
                 f"locked={locked} "
-                f"mask_used={detection.has_mask}"
+                f"points={points_world.shape[0]} "
+                f"stable_frames={self._stable_count}"
             )
 
     def _extract_target_cloud(
@@ -349,6 +428,54 @@ class CloudFilterNode(Node):
         msg = String()
         msg.data = compact_json({"status": "reset", "reason": reason})
         self.debug_pub.publish(msg)
+        if reason != self._last_reset_reason or self._last_lock_state:
+            self.get_logger().info(f"target tracking decision: reset reason={reason}")
+        self._last_lock_state = False
+        self._last_reset_reason = reason
+
+    def _republish_last_visuals(self) -> None:
+        stamp = self.get_clock().now().to_msg()
+        if self._last_target_cloud_points is not None:
+            self.target_cloud_pub.publish(
+                make_xyz_cloud(self._last_target_cloud_points, self.target_frame, stamp)
+            )
+            self.target_cloud_marker_pub.publish(
+                self._make_target_cloud_marker(self._last_target_cloud_points, stamp)
+            )
+        if self._last_target_pose_position is not None:
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = stamp
+            pose_msg.header.frame_id = self.target_frame
+            pose_msg.pose.position.x = float(self._last_target_pose_position[0])
+            pose_msg.pose.position.y = float(self._last_target_pose_position[1])
+            pose_msg.pose.position.z = float(self._last_target_pose_position[2])
+            pose_msg.pose.orientation.w = 1.0
+            self.target_pose_pub.publish(pose_msg)
+
+    def _make_target_cloud_marker(self, points_world: np.ndarray, stamp) -> Marker:
+        marker = Marker()
+        marker.header.frame_id = self.target_frame
+        marker.header.stamp = stamp
+        marker.ns = "target_cloud"
+        marker.id = 0
+        marker.type = Marker.SPHERE_LIST
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.012
+        marker.scale.y = 0.012
+        marker.scale.z = 0.012
+        marker.color.r = 0.16
+        marker.color.g = 0.82
+        marker.color.b = 1.0
+        marker.color.a = 0.95
+        marker.points = []
+        for point in np.asarray(points_world, dtype=np.float32).reshape((-1, 3)):
+            ros_point = Point()
+            ros_point.x = float(point[0])
+            ros_point.y = float(point[1])
+            ros_point.z = float(point[2])
+            marker.points.append(ros_point)
+        return marker
 
 
 def main(args=None) -> None:
