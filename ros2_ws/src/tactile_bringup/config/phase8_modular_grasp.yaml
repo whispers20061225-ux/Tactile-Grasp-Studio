@@ -42,6 +42,25 @@ detector_seg_node:
     candidate_complete_edge_margin_px: 16
     jpeg_quality: 90
     semantic_match_confidence_floor: 0.05
+    vlm_relabel_enabled: true
+    vlm_relabel_endpoint: "http://127.0.0.1:8000/v1/chat/completions"
+    vlm_relabel_model_name: "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
+    vlm_relabel_request_timeout_sec: 20.0
+    vlm_relabel_top_k: 3
+    vlm_relabel_min_confidence: 0.05
+    vlm_relabel_crop_margin_px: 12
+    vlm_relabel_resize_max_side_px: 384
+    vlm_relabel_jpeg_quality: 88
+    vlm_relabel_cache_ttl_sec: 30.0
+    vlm_relabel_min_interval_sec: 0.75
+    vlm_relabel_track_cooldown_sec: 4.0
+    vlm_relabel_low_confidence_threshold: 0.35
+    vlm_relabel_ambiguous_labels: ["remote", "cup", "bottle", "can", "vase", "wine glass"]
+    track_iou_threshold: 0.20
+    track_center_distance_px: 120.0
+    track_stale_sec: 10.0
+    track_label_hold_sec: 2.0
+    track_stable_frames_required: 2
     log_interval_sec: 10.0
 
 cloud_filter_node:
@@ -246,6 +265,12 @@ tactile_web_gateway:
     arm_state_topic: "/arm/state"
     execute_pick_service: "/task/execute_pick"
     reset_pick_session_service: "/task/reset_pick_session"
+    dialog_use_visual_context: true
+    dialog_visual_input_mode: "annotated"
+    dialog_visual_max_side_px: 896
+    dialog_visual_jpeg_quality: 85
+    dialog_visual_focus_timeout_sec: 20.0
+    dialog_default_reply_language: "zh"
     default_task: "pick"
     default_target_hint: "blue cylinder"
     default_constraints: ["parallel_gripper"]

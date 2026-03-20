@@ -2,7 +2,7 @@ import { type FormEvent, useMemo, useState } from "react";
 import type { BusyAction, ChatMessage, StreamMap } from "./appHelpers";
 import { phaseLabel, readString } from "./appHelpers";
 import { EmptyState, Panel, StatusPill, StreamThumbnail } from "./appUi";
-import type { DialogMode, SemanticDraft, UiState } from "./types";
+import type { DialogMode, DialogReplyLanguage, SemanticDraft, UiState } from "./types";
 
 type ControlPageProps = {
   state: UiState;
@@ -12,6 +12,7 @@ type ControlPageProps = {
   busyAction: BusyAction;
   chatMessages: ChatMessage[];
   dialogMode: DialogMode;
+  dialogReplyLanguage: DialogReplyLanguage;
   dialogStatusLabel: string;
   dialogPendingAutoExecute: boolean;
   onTaskChange: (value: string) => void;
@@ -20,6 +21,7 @@ type ControlPageProps = {
   onConstraintsChange: (value: string) => void;
   onDialogSubmit: (prompt: string) => Promise<boolean>;
   onDialogModeChange: (mode: DialogMode) => Promise<void>;
+  onDialogReplyLanguageChange: (replyLanguage: DialogReplyLanguage) => Promise<void>;
   onDialogReset: () => Promise<void>;
   onExecute: () => Promise<void>;
   onReplan: () => Promise<void>;
@@ -37,8 +39,10 @@ export function ControlPage(props: ControlPageProps) {
     props.state.execution.pick_active;
   const detectionPreviewBoxes = useMemo(() => {
     const selected = props.state.vision.selected_candidate;
+    const selectedLabel =
+      selected?.display_label || selected?.label_zh || selected?.canonical_label || selected?.label || "target";
     if (selected?.bbox_xyxy && selected.bbox_xyxy.length === 4) {
-      return [{ bbox: selected.bbox_xyxy, label: `Selected: ${selected.label}`, tone: "selected" as const }];
+      return [{ bbox: selected.bbox_xyxy, label: `Selected: ${selectedLabel}`, tone: "selected" as const }];
     }
     if (props.state.vision.detection.bbox?.xyxy) {
       return [
@@ -106,6 +110,26 @@ export function ControlPage(props: ControlPageProps) {
             disabled={props.busyAction !== null}
           >
             {props.busyAction === "dialog-reset" ? "Resetting..." : "New Session"}
+          </button>
+        </div>
+
+        <div className="button-row compact">
+          <span className="inline-note">Assistant Reply Language</span>
+          <button
+            type="button"
+            className={props.dialogReplyLanguage === "zh" ? "toggle-chip active" : "toggle-chip"}
+            onClick={() => void props.onDialogReplyLanguageChange("zh")}
+            disabled={props.busyAction === "dialog"}
+          >
+            中文
+          </button>
+          <button
+            type="button"
+            className={props.dialogReplyLanguage === "en" ? "toggle-chip active" : "toggle-chip"}
+            onClick={() => void props.onDialogReplyLanguageChange("en")}
+            disabled={props.busyAction === "dialog"}
+          >
+            English
           </button>
         </div>
 

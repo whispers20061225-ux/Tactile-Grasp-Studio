@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { postDialogMessage, postDialogMode, postDialogReset, postExecute, postOverride, postReplan } from "./api";
+import {
+  postDialogMessage,
+  postDialogMode,
+  postDialogReplyLanguage,
+  postDialogReset,
+  postExecute,
+  postOverride,
+  postReplan,
+} from "./api";
 import { ControlPage } from "./ControlPage";
 import { LogsPage } from "./LogsPage";
 import { TactilePage } from "./TactilePage";
@@ -15,7 +23,13 @@ import {
   type ToastItem,
 } from "./appHelpers";
 import { type BackendConnectionPhase, useBackendState } from "./appUi";
-import type { DialogMode, SemanticDraft, UiEvent, UiLevel } from "./types";
+import type {
+  DialogMode,
+  DialogReplyLanguage,
+  SemanticDraft,
+  UiEvent,
+  UiLevel,
+} from "./types";
 
 function App() {
   const { state, streams, connectionPhase, loading, setState, waitForState } = useBackendState();
@@ -161,7 +175,7 @@ function App() {
     if (!trimmed) { pushToast("warn", "Dialog", "Please enter a message."); return false; }
     setBusyAction("dialog");
     try {
-      const next = await postDialogMessage(trimmed, dialogState.mode);
+      const next = await postDialogMessage(trimmed, dialogState.mode, dialogState.reply_language);
       setState(next);
       resetDraftState();
       return true;
@@ -177,6 +191,14 @@ function App() {
       setState(await postDialogMode(mode));
     } catch (error) {
       pushToast("error", "Dialog", getErrorMessage(error, "Failed to change dialog mode."));
+    }
+  }, [pushToast, setState]);
+
+  const handleDialogReplyLanguageChange = useCallback(async (replyLanguage: DialogReplyLanguage) => {
+    try {
+      setState(await postDialogReplyLanguage(replyLanguage));
+    } catch (error) {
+      pushToast("error", "Dialog", getErrorMessage(error, "Failed to change reply language."));
     }
   }, [pushToast, setState]);
 
@@ -277,7 +299,7 @@ function App() {
       <main className="page-shell">
         <Routes>
           <Route path="/" element={<Navigate to="/control" replace />} />
-          <Route path="/control" element={<ControlPage state={state} streams={streams} draft={draft} draftDirty={draftDirty} busyAction={busyAction} chatMessages={dialogMessages} dialogMode={dialogState.mode} dialogStatusLabel={dialogState.status_label || dialogState.status} dialogPendingAutoExecute={Boolean(dialogState.pending_auto_execute)} onTaskChange={updateTask} onTargetChange={updateTarget} onGripperChange={updateGripper} onConstraintsChange={updateConstraints} onDialogSubmit={handleDialogSubmit} onDialogModeChange={handleDialogModeChange} onDialogReset={handleDialogReset} onExecute={handleExecute} onReplan={handleReplan} />} />
+          <Route path="/control" element={<ControlPage state={state} streams={streams} draft={draft} draftDirty={draftDirty} busyAction={busyAction} chatMessages={dialogMessages} dialogMode={dialogState.mode} dialogReplyLanguage={dialogState.reply_language} dialogStatusLabel={dialogState.status_label || dialogState.status} dialogPendingAutoExecute={Boolean(dialogState.pending_auto_execute)} onTaskChange={updateTask} onTargetChange={updateTarget} onGripperChange={updateGripper} onConstraintsChange={updateConstraints} onDialogSubmit={handleDialogSubmit} onDialogModeChange={handleDialogModeChange} onDialogReplyLanguageChange={handleDialogReplyLanguageChange} onDialogReset={handleDialogReset} onExecute={handleExecute} onReplan={handleReplan} />} />
           <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseLabel={setVisionOverride} />} />
           <Route path="/tactile" element={<TactilePage state={state} />} />
           <Route path="/logs" element={<LogsPage state={state} interventionState={interventionState} visibleBackendEvents={visibleBackendEvents} frontendEvents={frontendEvents} onClear={handleClearLogs} onExport={handleExportLogs} />} />

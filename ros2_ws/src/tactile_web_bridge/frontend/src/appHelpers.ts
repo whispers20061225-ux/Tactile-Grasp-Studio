@@ -27,7 +27,7 @@ export type ChatMessage = DialogMessageState;
 export type OverlayBox = {
   bbox: number[];
   label: string;
-  tone: "selected" | "hovered";
+  tone: "selected" | "hovered" | "candidate";
 };
 
 export type DisplayEvent = {
@@ -92,10 +92,12 @@ export const DEFAULT_STATE: UiState = {
   dialog: {
     session_id: "",
     mode: "review",
+    reply_language: "zh",
     status: "idle",
     status_label: "Idle",
     pending_auto_execute: false,
     last_error: "",
+    visual_focus: null,
     messages: [],
     updated_at: 0,
   },

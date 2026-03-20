@@ -1,6 +1,7 @@
 export type UiLevel = "info" | "warn" | "error";
 export type DialogMode = "review" | "auto";
 export type DialogRole = "user" | "assistant" | "system";
+export type DialogReplyLanguage = "zh" | "en";
 
 export interface UiEvent {
   id: number;
@@ -40,17 +41,31 @@ export interface DialogMessageState {
 export interface DialogState {
   session_id: string;
   mode: DialogMode;
+  reply_language: DialogReplyLanguage;
   status: string;
   status_label?: string;
   pending_auto_execute: boolean;
   last_error: string;
+  visual_focus?: Record<string, unknown> | null;
   messages: DialogMessageState[];
   updated_at: number;
 }
 
 export interface CandidateDebug {
   index: number;
+  track_id?: number;
+  track_new?: boolean;
+  track_seen_count?: number;
+  track_consecutive_hits?: number;
+  track_age_sec?: number;
+  track_label_age_sec?: number;
+  track_relabel_reason?: string;
   label: string;
+  raw_label?: string;
+  canonical_label?: string;
+  label_zh?: string;
+  display_label?: string;
+  label_source?: string;
   confidence: number;
   confidence_floor?: number;
   semantic_bonus: number;

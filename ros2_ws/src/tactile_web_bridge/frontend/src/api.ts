@@ -1,4 +1,10 @@
-import type { BootstrapResponse, DialogMode, SemanticDraft, UiState } from "./types";
+import type {
+  BootstrapResponse,
+  DialogMode,
+  DialogReplyLanguage,
+  SemanticDraft,
+  UiState,
+} from "./types";
 
 const DEV_BACKEND_HTTP_ORIGIN = "http://127.0.0.1:8765";
 const DEV_BACKEND_WS_ORIGIN = "ws://127.0.0.1:8765";
@@ -68,10 +74,14 @@ export async function postPrompt(prompt: string): Promise<UiState> {
   return response.state;
 }
 
-export async function postDialogMessage(message: string, mode: DialogMode): Promise<UiState> {
+export async function postDialogMessage(
+  message: string,
+  mode: DialogMode,
+  replyLanguage: DialogReplyLanguage,
+): Promise<UiState> {
   const response = await requestJson<{ ok: boolean; state: UiState }>("/api/dialog/message", {
     method: "POST",
-    body: JSON.stringify({ message, mode }),
+    body: JSON.stringify({ message, mode, reply_language: replyLanguage }),
   });
   return response.state;
 }
@@ -88,6 +98,19 @@ export async function postDialogReset(): Promise<UiState> {
   const response = await requestJson<{ ok: boolean; state: UiState }>("/api/dialog/reset", {
     method: "POST",
   });
+  return response.state;
+}
+
+export async function postDialogReplyLanguage(
+  replyLanguage: DialogReplyLanguage,
+): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>(
+    "/api/dialog/reply-language",
+    {
+      method: "POST",
+      body: JSON.stringify({ reply_language: replyLanguage }),
+    },
+  );
   return response.state;
 }
 
