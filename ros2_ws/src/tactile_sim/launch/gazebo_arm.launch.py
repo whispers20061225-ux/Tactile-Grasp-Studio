@@ -106,6 +106,21 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Bridge Gazebo wrist IMU topic into ROS",
     )
+    bridge_world_pose_info_arg = DeclareLaunchArgument(
+        "bridge_world_pose_info",
+        default_value="true",
+        description="Bridge Gazebo world pose info into ROS for scene debugging",
+    )
+    bridge_world_control_arg = DeclareLaunchArgument(
+        "bridge_world_control",
+        default_value="true",
+        description="Expose Gazebo world control reset as a ROS service",
+    )
+    bridge_world_set_pose_arg = DeclareLaunchArgument(
+        "bridge_world_set_pose",
+        default_value="true",
+        description="Expose Gazebo entity set-pose as a ROS service",
+    )
     start_realsense_adapter_arg = DeclareLaunchArgument(
         "start_realsense_adapter",
         default_value="true",
@@ -186,6 +201,9 @@ def generate_launch_description() -> LaunchDescription:
     bridge_camera = LaunchConfiguration("bridge_camera")
     bridge_depth = LaunchConfiguration("bridge_depth")
     bridge_imu = LaunchConfiguration("bridge_imu")
+    bridge_world_pose_info = LaunchConfiguration("bridge_world_pose_info")
+    bridge_world_control = LaunchConfiguration("bridge_world_control")
+    bridge_world_set_pose = LaunchConfiguration("bridge_world_set_pose")
     start_realsense_adapter = LaunchConfiguration("start_realsense_adapter")
     ros_camera_topic = LaunchConfiguration("ros_camera_topic")
     ros_camera_info_topic = LaunchConfiguration("ros_camera_info_topic")
@@ -469,6 +487,57 @@ def generate_launch_description() -> LaunchDescription:
         **node_respawn_kwargs,
     )
 
+    world_pose_info_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="world_pose_info_bridge",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=[
+            ["/world/", world_name, "/pose/info@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V"],
+            "--ros-args",
+            "--log-level",
+            "warn",
+            "-r",
+            ["/world/", world_name, "/pose/info:=/sim/world/pose/info"],
+        ],
+        condition=IfCondition(bridge_world_pose_info),
+        **node_respawn_kwargs,
+    )
+
+    world_control_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="world_control_bridge",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=[
+            ["/world/", world_name, "/control@ros_gz_interfaces/srv/ControlWorld"],
+            "--ros-args",
+            "--log-level",
+            "warn",
+            "-r",
+            ["/world/", world_name, "/control:=/sim/world/reset"],
+        ],
+        condition=IfCondition(bridge_world_control),
+        **node_respawn_kwargs,
+    )
+
+    world_set_pose_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="world_set_pose_bridge",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=[
+            ["/world/", world_name, "/set_pose@ros_gz_interfaces/srv/SetEntityPose"],
+            "--ros-args",
+            "--log-level",
+            "warn",
+            "-r",
+            ["/world/", world_name, "/set_pose:=/sim/world/set_pose"],
+        ],
+        condition=IfCondition(bridge_world_set_pose),
+        **node_respawn_kwargs,
+    )
+
     sim_realsense_adapter = Node(
         package="tactile_sim",
         executable="sim_realsense_adapter_node",
@@ -548,6 +617,9 @@ def generate_launch_description() -> LaunchDescription:
             camera_bridge,
             depth_bridge,
             imu_bridge,
+            world_pose_info_bridge,
+            world_control_bridge,
+            world_set_pose_bridge,
             sim_realsense_adapter,
             spawn_entity,
         ],
@@ -569,6 +641,9 @@ def generate_launch_description() -> LaunchDescription:
             bridge_camera_arg,
             bridge_depth_arg,
             bridge_imu_arg,
+            bridge_world_pose_info_arg,
+            bridge_world_control_arg,
+            bridge_world_set_pose_arg,
             start_realsense_adapter_arg,
             ros_camera_topic_arg,
             ros_camera_info_topic_arg,

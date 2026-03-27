@@ -67,6 +67,11 @@ export interface CandidateDebug {
   display_label?: string;
   label_source?: string;
   confidence: number;
+  yolo_confidence?: number;
+  semantic_confidence?: number;
+  track_stability?: number;
+  selection_confidence?: number;
+  selection_confidence_smoothed?: number;
   confidence_floor?: number;
   semantic_bonus: number;
   score: number;

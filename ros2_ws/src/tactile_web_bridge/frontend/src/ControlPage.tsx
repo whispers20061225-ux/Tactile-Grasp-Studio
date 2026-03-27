@@ -26,6 +26,8 @@ type ControlPageProps = {
   onExecute: () => Promise<void>;
   onReplan: () => Promise<void>;
   onReturnHome: () => Promise<void>;
+  onResetScene: () => Promise<void>;
+  onOpenDebugViews: () => Promise<void>;
 };
 
 export function ControlPage(props: ControlPageProps) {
@@ -205,6 +207,12 @@ export function ControlPage(props: ControlPageProps) {
             </button>
             <button className="ghost-button" data-testid="return-home-button" onClick={props.onReturnHome} disabled={props.busyAction !== null}>
               {props.busyAction === "return-home" ? "Returning..." : "Return Home"}
+            </button>
+            <button className="ghost-button" data-testid="reset-scene-button" onClick={props.onResetScene} disabled={props.busyAction !== null}>
+              {props.busyAction === "scene-reset" ? "Resetting..." : "Reset Scene"}
+            </button>
+            <button className="ghost-button" data-testid="open-debug-button" onClick={props.onOpenDebugViews} disabled={props.busyAction !== null}>
+              {props.busyAction === "debug-open" ? "Opening..." : "Open Debug"}
             </button>
           </div>
           <div className="inline-note">Execute submits the draft override first, waits for the applied label to settle, then calls the execute API.</div>

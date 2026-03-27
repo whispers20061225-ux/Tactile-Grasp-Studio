@@ -3,6 +3,8 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
+import subprocess
 import threading
 import time
 from collections import deque
@@ -29,7 +31,10 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
+from tf2_msgs.msg import TFMessage
+from ros_gz_interfaces.msg import Entity
+from ros_gz_interfaces.srv import ControlWorld, SetEntityPose
 from tactile_interfaces.msg import (
     ArmState,
     DetectionResult,
@@ -38,6 +43,7 @@ from tactile_interfaces.msg import (
     SystemHealth,
     TactileRaw,
 )
+from tactile_interfaces.srv import MoveArmJoints
 
 
 def _safe_json_loads(raw_text: str) -> dict[str, Any]:
@@ -1064,6 +1070,28 @@ class TactileWebGateway(Node):
         self.declare_parameter("reset_pick_session_service", "/task/reset_pick_session")
         self.declare_parameter("return_home_service", "/task/return_home")
         self.declare_parameter("start_search_sweep_service", "/task/start_search_sweep")
+        self.declare_parameter("control_arm_enable_service", "/control/arm/enable")
+        self.declare_parameter("control_arm_move_joints_service", "/control/arm/move_joints")
+        self.declare_parameter("scene_reset_service", "/sim/world/reset")
+        self.declare_parameter("scene_set_pose_service", "/sim/world/set_pose")
+        self.declare_parameter("scene_pose_info_topic", "/sim/world/pose/info")
+        self.declare_parameter("scene_target_model_name", "target_cylinder")
+        self.declare_parameter("scene_reset_use_world_reset", False)
+        self.declare_parameter("scene_reset_delay_sec", 0.75)
+        self.declare_parameter("scene_reset_return_home_after_reset", True)
+        self.declare_parameter(
+            "scene_target_reset_pose",
+            [0.50, 0.08, 0.44, 0.0, 0.0, 0.0, 1.0],
+        )
+        self.declare_parameter("debug_open_gazebo_gui", True)
+        self.declare_parameter("debug_open_rviz", True)
+        self.declare_parameter("debug_open_views_script", "")
+        self.declare_parameter("return_home_joint_ids", [1, 2, 3, 4, 5, 6])
+        self.declare_parameter("return_home_joint_angles_deg", [3.0, -62.0, 102.0, 82.0, 0.0, -68.754936])
+        self.declare_parameter("return_home_duration_ms", 3500)
+        self.declare_parameter("return_home_wait_for_completion", False)
+        self.declare_parameter("startup_prepare_home", True)
+        self.declare_parameter("startup_prepare_home_delay_sec", 6.0)
         self.declare_parameter("event_log_capacity", 240)
         self.declare_parameter("feedback_event_capacity", 48)
         self.declare_parameter("stream_jpeg_quality", 95)
@@ -1117,6 +1145,68 @@ class TactileWebGateway(Node):
         self.return_home_service = str(self.get_parameter("return_home_service").value)
         self.start_search_sweep_service = str(
             self.get_parameter("start_search_sweep_service").value
+        )
+        self.control_arm_enable_service = str(
+            self.get_parameter("control_arm_enable_service").value
+        )
+        self.control_arm_move_joints_service = str(
+            self.get_parameter("control_arm_move_joints_service").value
+        )
+        self.scene_reset_service = str(self.get_parameter("scene_reset_service").value)
+        self.scene_set_pose_service = str(self.get_parameter("scene_set_pose_service").value)
+        self.scene_pose_info_topic = str(self.get_parameter("scene_pose_info_topic").value)
+        self.scene_target_model_name = (
+            str(self.get_parameter("scene_target_model_name").value).strip() or "target_cylinder"
+        )
+        self.scene_reset_use_world_reset = bool(
+            self.get_parameter("scene_reset_use_world_reset").value
+        )
+        self.scene_reset_delay_sec = max(
+            0.0, float(self.get_parameter("scene_reset_delay_sec").value)
+        )
+        self.scene_reset_return_home_after_reset = bool(
+            self.get_parameter("scene_reset_return_home_after_reset").value
+        )
+        scene_target_reset_pose = [
+            float(item)
+            for item in list(self.get_parameter("scene_target_reset_pose").value)
+        ]
+        if len(scene_target_reset_pose) != 7:
+            scene_target_reset_pose = [0.50, 0.08, 0.44, 0.0, 0.0, 0.0, 1.0]
+        self.scene_target_reset_pose = {
+            "position": {
+                "x": float(scene_target_reset_pose[0]),
+                "y": float(scene_target_reset_pose[1]),
+                "z": float(scene_target_reset_pose[2]),
+            },
+            "orientation": {
+                "x": float(scene_target_reset_pose[3]),
+                "y": float(scene_target_reset_pose[4]),
+                "z": float(scene_target_reset_pose[5]),
+                "w": float(scene_target_reset_pose[6]),
+            },
+        }
+        self.debug_open_gazebo_gui = bool(self.get_parameter("debug_open_gazebo_gui").value)
+        self.debug_open_rviz = bool(self.get_parameter("debug_open_rviz").value)
+        self.debug_open_views_script = str(
+            self.get_parameter("debug_open_views_script").value or ""
+        ).strip()
+        self.return_home_joint_ids = [
+            int(item) for item in list(self.get_parameter("return_home_joint_ids").value)
+        ]
+        self.return_home_joint_angles_deg = [
+            float(item)
+            for item in list(self.get_parameter("return_home_joint_angles_deg").value)
+        ]
+        self.return_home_duration_ms = max(
+            500, int(self.get_parameter("return_home_duration_ms").value)
+        )
+        self.return_home_wait_for_completion = bool(
+            self.get_parameter("return_home_wait_for_completion").value
+        )
+        self.startup_prepare_home = bool(self.get_parameter("startup_prepare_home").value)
+        self.startup_prepare_home_delay_sec = max(
+            0.0, float(self.get_parameter("startup_prepare_home_delay_sec").value)
         )
         self.event_log_capacity = max(50, int(self.get_parameter("event_log_capacity").value))
         self.feedback_event_capacity = max(
@@ -1197,6 +1287,18 @@ class TactileWebGateway(Node):
         self.start_search_sweep_client = self.create_client(
             Trigger, self.start_search_sweep_service
         )
+        self.control_arm_enable_client = self.create_client(
+            SetBool, self.control_arm_enable_service
+        )
+        self.control_arm_move_joints_client = self.create_client(
+            MoveArmJoints, self.control_arm_move_joints_service
+        )
+        self.scene_reset_client = self.create_client(
+            ControlWorld, self.scene_reset_service
+        )
+        self.scene_set_pose_client = self.create_client(
+            SetEntityPose, self.scene_set_pose_service
+        )
 
         self.create_subscription(String, self.semantic_result_topic, self._on_semantic_result, qos_reliable)
         self.create_subscription(SemanticTask, self.semantic_task_topic, self._on_semantic_task, qos_reliable)
@@ -1222,6 +1324,7 @@ class TactileWebGateway(Node):
         self.create_subscription(TactileRaw, self.tactile_topic, self._on_tactile, qos_sensor)
         self.create_subscription(SystemHealth, self.health_topic, self._on_health, qos_reliable)
         self.create_subscription(ArmState, self.arm_state_topic, self._on_arm_state, qos_reliable)
+        self.create_subscription(TFMessage, self.scene_pose_info_topic, self._on_scene_pose_info, qos_reliable)
 
         self._lock = threading.Lock()
         self._state_version = 0
@@ -1247,6 +1350,17 @@ class TactileWebGateway(Node):
         self._tactile: dict[str, Any] = {"updated_at": 0.0}
         self._arm_state: dict[str, Any] = {"updated_at": 0.0}
         self._health_by_node: dict[str, dict[str, Any]] = {}
+        self._scene_target_pose: dict[str, Any] = {
+            "model_name": self.scene_target_model_name,
+            "found": False,
+            "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
+            "updated_at": 0.0,
+        }
+        self._ws_root = Path(__file__).resolve().parents[3]
+        self._runtime_log_dir = self._ws_root / ".runtime" / "programme-ui"
+        self._runtime_log_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_gazebo_log = self._runtime_log_dir / "debug-gazebo-gui.log"
+        self._debug_rviz_log = self._runtime_log_dir / "debug-rviz.log"
         self._dialog_message_id = 0
         self._dialog = {
             "session_id": uuid4().hex,
@@ -1298,6 +1412,8 @@ class TactileWebGateway(Node):
             f"tactile_web_gateway ready: host={self.host} port={self.port} "
             f"prompt={self.prompt_topic} semantic_task={self.semantic_task_topic}"
         )
+        if self.startup_prepare_home:
+            threading.Thread(target=self._startup_prepare_home_worker, daemon=True).start()
 
     def destroy_node(self) -> bool:
         self.rgb_encoder.close()
@@ -1530,6 +1646,44 @@ class TactileWebGateway(Node):
         arm_state = _arm_state_to_dict(msg)
         with self._lock:
             self._arm_state = arm_state
+            self._state_version += 1
+
+    def _on_scene_pose_info(self, msg: TFMessage) -> None:
+        target_name = self.scene_target_model_name
+        pose_info: dict[str, Any] = {
+            "model_name": target_name,
+            "found": False,
+            "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
+            "updated_at": _now_sec(),
+        }
+        for transform in list(msg.transforms):
+            child_frame_id = str(getattr(transform, "child_frame_id", "") or "")
+            if target_name not in child_frame_id:
+                continue
+            header = getattr(transform, "header", None)
+            translation = getattr(transform, "transform", None)
+            pose_info = {
+                "model_name": target_name,
+                "child_frame_id": child_frame_id,
+                "frame_id": str(getattr(header, "frame_id", "") or ""),
+                "found": True,
+                "position": {
+                    "x": float(getattr(getattr(translation, "translation", None), "x", 0.0)),
+                    "y": float(getattr(getattr(translation, "translation", None), "y", 0.0)),
+                    "z": float(getattr(getattr(translation, "translation", None), "z", 0.0)),
+                },
+                "orientation": {
+                    "x": float(getattr(getattr(translation, "rotation", None), "x", 0.0)),
+                    "y": float(getattr(getattr(translation, "rotation", None), "y", 0.0)),
+                    "z": float(getattr(getattr(translation, "rotation", None), "z", 0.0)),
+                    "w": float(getattr(getattr(translation, "rotation", None), "w", 1.0)),
+                },
+                "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
+                "updated_at": _now_sec(),
+            }
+            break
+        with self._lock:
+            self._scene_target_pose = pose_info
             self._state_version += 1
 
     def _append_dialog_message(
@@ -2353,6 +2507,11 @@ class TactileWebGateway(Node):
             item for item in list(snapshot.get("top_candidates", []) or []) if isinstance(item, dict)
         ]
         top_candidate = top_candidates[0] if top_candidates else None
+        selected_candidate = (
+            copy.deepcopy(snapshot.get("selected_candidate"))
+            if isinstance(snapshot.get("selected_candidate"), dict)
+            else None
+        )
         if (
             requested_action == "clarify"
             and _dialog_mentions_answer_query(user_text)
@@ -2426,6 +2585,19 @@ class TactileWebGateway(Node):
         else:
             target_hint = ""
 
+        execution_candidate = None
+        if requested_action in {"update_task", "execute"}:
+            execution_candidate = self._match_dialog_candidate(
+                top_candidates,
+                target_label=target_label,
+                target_hint=target_hint or user_text,
+                user_text=user_text,
+            )
+            if execution_candidate is None and isinstance(selected_candidate, dict):
+                selected_label = _dialog_candidate_primary_label(selected_candidate)
+                if not target_label or _dialog_labels_related(target_label, selected_label):
+                    execution_candidate = copy.deepcopy(selected_candidate)
+
         confidence_raw = response.get("confidence", semantic_defaults["confidence"])
         try:
             confidence = float(confidence_raw)
@@ -2433,6 +2605,14 @@ class TactileWebGateway(Node):
             confidence = float(semantic_defaults["confidence"])
         if deictic_reference and isinstance(visual_focus, dict):
             confidence = max(confidence, float(visual_focus.get("confidence", 0.0) or 0.0))
+        if requested_action == "execute":
+            if isinstance(execution_candidate, dict):
+                confidence = max(confidence, float(execution_candidate.get("confidence", 0.0) or 0.0))
+            elif isinstance(top_candidate, dict) and target_label and _dialog_labels_related(
+                target_label,
+                _dialog_candidate_primary_label(top_candidate),
+            ):
+                confidence = max(confidence, float(top_candidate.get("confidence", 0.0) or 0.0))
         confidence = max(0.0, min(1.0, confidence))
         assistant_text = str(
             response.get("assistant_text")
@@ -2503,7 +2683,43 @@ class TactileWebGateway(Node):
                 default_need_human_confirm,
             )
         )
+        strong_execute_signal = (
+            requested_action == "execute"
+            and bool(target_label or target_hint)
+            and confidence >= self.dialog_auto_execute_confidence_threshold
+            and (
+                isinstance(execution_candidate, dict)
+                or isinstance(visual_focus, dict)
+                or (
+                    isinstance(selected_candidate, dict)
+                    and (
+                        not target_label
+                        or _dialog_labels_related(
+                            target_label,
+                            _dialog_candidate_primary_label(selected_candidate),
+                        )
+                    )
+                )
+            )
+        )
+        if strong_execute_signal:
+            need_human_confirm = False
         reason = str(response.get("reason", "") or "").strip()
+        asks_confirmation = "confirm" in assistant_text.lower() or "确认" in assistant_text
+        if requested_action == "execute" and not need_human_confirm and (
+            _dialog_assistant_text_is_low_signal(assistant_text)
+            or asks_confirmation
+            or not _dialog_assistant_text_mentions_execution(assistant_text)
+        ):
+            execute_target = target_hint or target_label or str(
+                (visual_focus or {}).get("target_hint", "") or (visual_focus or {}).get("label", "")
+            ).strip()
+            if execute_target:
+                assistant_text = _dialog_reply_text(
+                    reply_language,
+                    f"我已经把任务更新为抓取{execute_target}，并会按当前锁定目标继续执行。",
+                    f"I updated the task to pick the {execute_target} and will continue with the current locked target.",
+                )
         if not assistant_text:
             if requested_action == "clarify":
                 assistant_text = _dialog_reply_text(
@@ -2724,6 +2940,14 @@ class TactileWebGateway(Node):
             )
         if visual_focus is not None:
             self._set_dialog_visual_focus(visual_focus)
+        self.get_logger().info(
+            "dialog normalized: "
+            f"action={requested_action} "
+            f"target={str(normalized.get('target_hint') or normalized.get('target_label') or '').strip()} "
+            f"confidence={float(normalized.get('confidence', 0.0) or 0.0):.3f} "
+            f"need_human_confirm={bool(normalized.get('need_human_confirm', False))} "
+            f"visual_focus={'yes' if isinstance(visual_focus, dict) else 'no'}"
+        )
         semantic_payload: Optional[dict[str, Any]] = None
         if requested_action not in {"clarify", "cancel", "answer"}:
             semantic_payload = {
@@ -2811,12 +3035,33 @@ class TactileWebGateway(Node):
         if not target_name:
             self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
             return "Auto mode held execution because the target is still unspecified."
+        if (
+            need_human_confirm
+            and confidence >= self.dialog_auto_execute_confidence_threshold
+            and _dialog_mentions_execute_intent(user_text)
+        ):
+            need_human_confirm = False
         if need_human_confirm or confidence < self.dialog_auto_execute_confidence_threshold:
             self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
-            return (
-                "Auto mode updated the task but held execution because the instruction is still ambiguous "
-                "or low-confidence."
+            self.get_logger().info(
+                "dialog auto execute held: "
+                f"target={target_name} "
+                f"confidence={float(confidence):.3f} "
+                f"threshold={float(self.dialog_auto_execute_confidence_threshold):.3f} "
+                f"need_human_confirm={bool(need_human_confirm)}"
             )
+            return (
+                "Auto mode updated the task but held execution "
+                f"(confidence={float(confidence):.2f}, "
+                f"threshold={float(self.dialog_auto_execute_confidence_threshold):.2f}, "
+                f"need_human_confirm={'true' if need_human_confirm else 'false'})."
+            )
+        self.get_logger().info(
+            "dialog auto execute allowed: "
+            f"target={target_name} "
+            f"confidence={float(confidence):.3f} "
+            f"threshold={float(self.dialog_auto_execute_confidence_threshold):.3f}"
+        )
 
         sweep_ok, sweep_message = self._call_trigger(
             self.start_search_sweep_client,
@@ -2832,6 +3077,22 @@ class TactileWebGateway(Node):
         if pick_active:
             self._set_dialog_status(status="auto_executing", pending_auto_execute=False, last_error="")
             return "Auto mode kept the updated task, but a pick is already running."
+
+        snapshot = self._dialog_context_snapshot()
+        selected_candidate = snapshot.get("selected_candidate")
+        if (
+            not target_locked
+            and isinstance(selected_candidate, dict)
+            and float(selected_candidate.get("confidence", 0.0) or 0.0) >= 0.1
+        ):
+            ok, message, _ = self.execute_pick()
+            if ok:
+                self._set_dialog_status(status="awaiting_lock", pending_auto_execute=False, last_error="")
+                self._append_dialog_message(
+                    "system",
+                    "Auto mode started pregrasp preparation and is waiting for final target lock.",
+                )
+                return "Auto mode started pregrasp preparation and is waiting for final target lock."
 
         if target_locked:
             self._set_dialog_status(status="auto_executing", pending_auto_execute=False, last_error="")
@@ -2873,19 +3134,231 @@ class TactileWebGateway(Node):
                 daemon=True,
             ).start()
 
-    def _call_trigger(self, client: Any, timeout_sec: float = 4.0) -> tuple[bool, str]:
+    def _call_service_request(
+        self, client: Any, request: Any, timeout_sec: float = 4.0
+    ) -> tuple[bool, str, Any]:
         if not client.wait_for_service(timeout_sec=timeout_sec):
-            return False, "service is unavailable"
-        future = client.call_async(Trigger.Request())
+            return False, "service is unavailable", None
+        future = client.call_async(request)
         done = threading.Event()
         future.add_done_callback(lambda _: done.set())
         if not done.wait(timeout_sec):
-            return False, "service call timed out"
+            return False, "service call timed out", None
         try:
             result = future.result()
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, str(exc), None
+        return True, "", result
+
+    def _call_trigger(self, client: Any, timeout_sec: float = 4.0) -> tuple[bool, str]:
+        ok, error, result = self._call_service_request(client, Trigger.Request(), timeout_sec=timeout_sec)
+        if not ok or result is None:
+            return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
+
+    def _call_set_bool(self, client: Any, value: bool, timeout_sec: float = 4.0) -> tuple[bool, str]:
+        request = SetBool.Request()
+        request.data = bool(value)
+        ok, error, result = self._call_service_request(client, request, timeout_sec=timeout_sec)
+        if not ok or result is None:
+            return False, error or "service call failed"
+        return bool(result.success), str(result.message or "")
+
+    def _call_world_reset(self, *, model_only: bool = True, timeout_sec: float = 4.0) -> tuple[bool, str]:
+        request = ControlWorld.Request()
+        request.world_control.reset.model_only = bool(model_only)
+        request.world_control.reset.all = not bool(model_only)
+        request.world_control.reset.time_only = False
+        ok, error, result = self._call_service_request(
+            self.scene_reset_client,
+            request,
+            timeout_sec=timeout_sec,
+        )
+        if not ok or result is None:
+            return False, error or "service call failed"
+        return bool(result.success), "scene reset accepted" if bool(result.success) else "scene reset failed"
+
+    def _call_scene_set_pose(self, timeout_sec: float = 4.0) -> tuple[bool, str]:
+        request = SetEntityPose.Request()
+        request.entity = Entity(
+            name=self.scene_target_model_name,
+            type=Entity.MODEL,
+        )
+        request.pose.position.x = float(self.scene_target_reset_pose["position"]["x"])
+        request.pose.position.y = float(self.scene_target_reset_pose["position"]["y"])
+        request.pose.position.z = float(self.scene_target_reset_pose["position"]["z"])
+        request.pose.orientation.x = float(self.scene_target_reset_pose["orientation"]["x"])
+        request.pose.orientation.y = float(self.scene_target_reset_pose["orientation"]["y"])
+        request.pose.orientation.z = float(self.scene_target_reset_pose["orientation"]["z"])
+        request.pose.orientation.w = float(self.scene_target_reset_pose["orientation"]["w"])
+        ok, error, result = self._call_service_request(
+            self.scene_set_pose_client,
+            request,
+            timeout_sec=timeout_sec,
+        )
+        if not ok or result is None:
+            return False, error or "service call failed"
+        if bool(result.success):
+            with self._lock:
+                self._scene_target_pose = {
+                    "model_name": self.scene_target_model_name,
+                    "found": True,
+                    "frame_id": "world",
+                    "child_frame_id": self.scene_target_model_name,
+                    "position": copy.deepcopy(self.scene_target_reset_pose["position"]),
+                    "orientation": copy.deepcopy(self.scene_target_reset_pose["orientation"]),
+                    "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
+                    "updated_at": _now_sec(),
+                }
+                self._state_version += 1
+        return bool(result.success), (
+            "target pose restored" if bool(result.success) else "target pose restore failed"
+        )
+
+    def _debug_open_views_script_path(self) -> str:
+        if self.debug_open_views_script:
+            return self.debug_open_views_script
+        distro = str(os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04") or "Ubuntu-24.04")
+        script_path = str(self._ws_root / "scripts" / "open_programme_debug_views.ps1")
+        script_path = script_path.replace("/", "\\")
+        return f"\\\\wsl.localhost\\{distro}{script_path}"
+
+    def _windows_powershell_exe(self) -> str:
+        candidates = [
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "/mnt/c/Windows/Sysnative/WindowsPowerShell/v1.0/powershell.exe",
+            "powershell.exe",
+        ]
+        for candidate in candidates:
+            if candidate == "powershell.exe" or os.path.exists(candidate):
+                return candidate
+        return "powershell.exe"
+
+    def open_debug_views(self) -> tuple[bool, str, dict[str, Any]]:
+        request_id = f"{int(time.time() * 1000)}"
+        request = {
+            "request_id": request_id,
+            "distro": str(os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04") or "Ubuntu-24.04"),
+            "open_gazebo_gui": self.debug_open_gazebo_gui,
+            "open_rviz": self.debug_open_rviz,
+        }
+        request_json = json.dumps(request).replace("'", "''")
+        args = [
+            self._windows_powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "$runtimeDir = Join-Path $env:LOCALAPPDATA 'ProgrammeWebUI'; "
+                "New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null; "
+                "$requestFile = Join-Path $runtimeDir 'debug-open-request.json'; "
+                f"Set-Content -Path $requestFile -Value '{request_json}' -Encoding UTF8"
+            ),
+        ]
+        ok = False
+        message = "debug views disabled"
+        try:
+            result = subprocess.run(
+                args,
+                cwd=str(self._ws_root),
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                check=False,
+            )
+            stdout = str(result.stdout or "").strip()
+            stderr = str(result.stderr or "").strip()
+            message = stdout or stderr or "debug launch requested"
+            ok = result.returncode == 0
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+        self._record_event(
+            "execution",
+            "info" if ok else "error",
+            "debug views requested" if ok else f"debug views failed: {message}",
+            data={
+                "gazebo_gui_enabled": self.debug_open_gazebo_gui,
+                "rviz_enabled": self.debug_open_rviz,
+                "gazebo_log": str(self._debug_gazebo_log),
+                "rviz_log": str(self._debug_rviz_log),
+            },
+            feedback=True,
+        )
+        return ok, message, self.build_state()
+
+    def _call_move_joints(
+        self,
+        joint_ids: list[int],
+        angles_deg: list[float],
+        *,
+        duration_ms: int,
+        wait: bool,
+        timeout_sec: float = 4.0,
+    ) -> tuple[bool, str]:
+        request = MoveArmJoints.Request()
+        request.joint_ids = [int(item) for item in joint_ids]
+        request.angles_deg = [float(item) for item in angles_deg]
+        request.duration_ms = int(duration_ms)
+        request.wait = bool(wait)
+        ok, error, result = self._call_service_request(
+            self.control_arm_move_joints_client,
+            request,
+            timeout_sec=timeout_sec,
+        )
+        if not ok or result is None:
+            return False, error or "service call failed"
+        return bool(result.success), str(result.message or "")
+
+    def _request_return_home_motion(
+        self,
+        *,
+        reason: str,
+        retries: int,
+        retry_delay_sec: float,
+    ) -> tuple[bool, str]:
+        if len(self.return_home_joint_ids) != len(self.return_home_joint_angles_deg):
+            return False, "home joint configuration is invalid"
+        last_error = "unknown error"
+        for attempt in range(max(1, retries)):
+            enable_ok, enable_message = self._call_set_bool(
+                self.control_arm_enable_client,
+                True,
+                timeout_sec=3.0,
+            )
+            if not enable_ok:
+                last_error = f"enable failed: {enable_message}"
+            else:
+                move_ok, move_message = self._call_move_joints(
+                    self.return_home_joint_ids,
+                    self.return_home_joint_angles_deg,
+                    duration_ms=self.return_home_duration_ms,
+                    wait=self.return_home_wait_for_completion,
+                    timeout_sec=4.0,
+                )
+                if move_ok:
+                    return True, move_message or "trajectory goal accepted"
+                last_error = f"move failed: {move_message}"
+            if attempt + 1 < max(1, retries):
+                time.sleep(max(0.1, retry_delay_sec))
+        self.get_logger().warn(f"{reason}: {last_error}")
+        return False, last_error
+
+    def _startup_prepare_home_worker(self) -> None:
+        time.sleep(self.startup_prepare_home_delay_sec)
+        ok, message = self._request_return_home_motion(
+            reason="startup home/open prepare",
+            retries=6,
+            retry_delay_sec=1.0,
+        )
+        self._record_event(
+            "execution",
+            "info" if ok else "warn",
+            "startup home/open prepared"
+            if ok
+            else f"startup home/open prepare failed: {message}",
+            feedback=False,
+        )
 
     def publish_prompt(self, prompt: str) -> dict[str, Any]:
         message = String()
@@ -2977,11 +3450,59 @@ class TactileWebGateway(Node):
         return ok, message, self.build_state()
 
     def return_home(self) -> tuple[bool, str, dict[str, Any]]:
-        ok, message = self._call_trigger(self.return_home_client)
+        ok, message = self._request_return_home_motion(
+            reason="return home request",
+            retries=2,
+            retry_delay_sec=0.5,
+        )
         self._record_event(
             "execution",
             "info" if ok else "error",
             "return home requested" if ok else f"return home failed: {message}",
+            feedback=True,
+        )
+        return ok, message, self.build_state()
+
+    def reset_scene(self) -> tuple[bool, str, dict[str, Any]]:
+        reset_pick_ok, reset_pick_message = self._call_trigger(self.reset_pick_client, timeout_sec=1.5)
+        world_ok = True
+        world_message = "skipped"
+        if self.scene_reset_use_world_reset:
+            world_ok, world_message = self._call_world_reset(model_only=True, timeout_sec=3.0)
+        pose_ok, pose_message = self._call_scene_set_pose(timeout_sec=3.0)
+        if (world_ok or pose_ok) and self.scene_reset_delay_sec > 0.0:
+            time.sleep(self.scene_reset_delay_sec)
+
+        home_ok = True
+        home_message = "skipped"
+        if (world_ok or pose_ok) and self.scene_reset_return_home_after_reset:
+            home_ok, home_message = self._request_return_home_motion(
+                reason="scene reset home prepare",
+                retries=3,
+                retry_delay_sec=0.5,
+            )
+
+        scene_ok = bool(world_ok or pose_ok)
+        ok = bool(scene_ok and (home_ok or not self.scene_reset_return_home_after_reset))
+        detail_parts = []
+        if not reset_pick_ok:
+            detail_parts.append(f"pick reset: {reset_pick_message}")
+        detail_parts.append(f"world reset: {world_message}")
+        detail_parts.append(f"target pose: {pose_message}")
+        if self.scene_reset_return_home_after_reset:
+            detail_parts.append(f"return home: {home_message}")
+        message = " | ".join(part for part in detail_parts if part)
+        self._record_event(
+            "execution",
+            "info" if ok else "error",
+            "scene reset requested" if ok else f"scene reset failed: {message}",
+            data={
+                "pick_reset_ok": reset_pick_ok,
+                "world_reset_ok": world_ok,
+                "target_pose_ok": pose_ok,
+                "return_home_ok": home_ok,
+                "scene_target_pose": copy.deepcopy(self._scene_target_pose),
+            },
             feedback=True,
         )
         return ok, message, self.build_state()
@@ -3000,6 +3521,7 @@ class TactileWebGateway(Node):
             intervention = copy.deepcopy(self._intervention)
             health_by_node = copy.deepcopy(self._health_by_node)
             dialog = copy.deepcopy(self._dialog)
+            scene_target_pose = copy.deepcopy(self._scene_target_pose)
             events = list(self._events)
             feedback_events = list(self._feedback_events)
             target_locked = bool(self._target_locked)
@@ -3120,6 +3642,9 @@ class TactileWebGateway(Node):
                 "dialog": {
                     **dialog,
                     "status_label": _dialog_status_label(str(dialog.get("status", "idle"))),
+                },
+                "scene": {
+                    "target": scene_target_pose,
                 },
             }
         )
@@ -3282,6 +3807,24 @@ def create_app(bridge: TactileWebGateway) -> Any:
     @app.post("/api/execution/return-home")
     async def post_return_home() -> JSONResponse:
         ok, message, state = bridge.return_home()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/execution/reset-scene")
+    async def post_reset_scene() -> JSONResponse:
+        ok, message, state = bridge.reset_scene()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/debug/open-views")
+    async def post_open_debug_views() -> JSONResponse:
+        ok, message, state = bridge.open_debug_views()
         status_code = 200 if ok else 409
         return JSONResponse(
             {"ok": ok, "message": message, "state": state},

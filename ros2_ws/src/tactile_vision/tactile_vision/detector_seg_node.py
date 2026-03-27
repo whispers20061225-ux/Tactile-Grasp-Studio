@@ -102,6 +102,7 @@ class DetectorSegNode(Node):
 
         self.declare_parameter("color_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("semantic_task_topic", "/qwen/semantic_task")
+        self.declare_parameter("pick_status_topic", "/sim/task/pick_status")
         self.declare_parameter("detection_result_topic", "/perception/detection_result")
         self.declare_parameter(
             "candidate_visible_topic", "/sim/perception/target_candidate_visible"
@@ -140,6 +141,9 @@ class DetectorSegNode(Node):
         self.declare_parameter("vlm_relabel_cache_ttl_sec", 30.0)
         self.declare_parameter("vlm_relabel_min_interval_sec", 2.5)
         self.declare_parameter("vlm_relabel_track_cooldown_sec", 5.0)
+        self.declare_parameter("vlm_relabel_focus_top_k", 1)
+        self.declare_parameter("vlm_relabel_focus_track_cooldown_sec", 1.25)
+        self.declare_parameter("vlm_relabel_focus_without_overview", True)
         self.declare_parameter("vlm_relabel_low_confidence_threshold", 0.35)
         self.declare_parameter(
             "vlm_relabel_ambiguous_labels",
@@ -150,10 +154,23 @@ class DetectorSegNode(Node):
         self.declare_parameter("track_stale_sec", 10.0)
         self.declare_parameter("track_label_hold_sec", 2.0)
         self.declare_parameter("track_stable_frames_required", 2)
+        self.declare_parameter("selection_conf_qwen_weight", 0.6)
+        self.declare_parameter("selection_conf_yolo_weight", 0.25)
+        self.declare_parameter("selection_conf_track_weight", 0.15)
+        self.declare_parameter("selection_conf_smoothing_frames", 3)
+        self.declare_parameter("vlm_relabel_default_semantic_confidence", 0.65)
+        self.declare_parameter("suppress_robot_self_candidates", True)
+        self.declare_parameter("robot_self_inference_mask_bottom_band_px", 40)
+        self.declare_parameter("robot_self_bottom_touch_tolerance_px", 2)
+        self.declare_parameter("robot_self_candidate_min_y_ratio", 0.90)
+        self.declare_parameter("robot_self_candidate_max_height_px", 52)
+        self.declare_parameter("robot_self_candidate_max_width_px", 96)
+        self.declare_parameter("robot_self_candidate_max_mask_pixels", 2500)
         self.declare_parameter("log_interval_sec", 10.0)
 
         self.color_topic = str(self.get_parameter("color_topic").value)
         self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
+        self.pick_status_topic = str(self.get_parameter("pick_status_topic").value)
         self.detection_result_topic = str(self.get_parameter("detection_result_topic").value)
         self.candidate_visible_topic = str(self.get_parameter("candidate_visible_topic").value)
         self.detection_debug_topic = str(self.get_parameter("detection_debug_topic").value)
@@ -237,6 +254,16 @@ class DetectorSegNode(Node):
         self.vlm_relabel_track_cooldown_sec = max(
             0.0, float(self.get_parameter("vlm_relabel_track_cooldown_sec").value)
         )
+        self.vlm_relabel_focus_top_k = max(
+            1, int(self.get_parameter("vlm_relabel_focus_top_k").value)
+        )
+        self.vlm_relabel_focus_track_cooldown_sec = max(
+            0.0,
+            float(self.get_parameter("vlm_relabel_focus_track_cooldown_sec").value),
+        )
+        self.vlm_relabel_focus_without_overview = bool(
+            self.get_parameter("vlm_relabel_focus_without_overview").value
+        )
         self.vlm_relabel_low_confidence_threshold = max(
             0.0,
             min(1.0, float(self.get_parameter("vlm_relabel_low_confidence_threshold").value)),
@@ -263,6 +290,60 @@ class DetectorSegNode(Node):
         self.track_stable_frames_required = max(
             1, int(self.get_parameter("track_stable_frames_required").value)
         )
+        self.selection_conf_qwen_weight = max(
+            0.0, float(self.get_parameter("selection_conf_qwen_weight").value)
+        )
+        self.selection_conf_yolo_weight = max(
+            0.0, float(self.get_parameter("selection_conf_yolo_weight").value)
+        )
+        self.selection_conf_track_weight = max(
+            0.0, float(self.get_parameter("selection_conf_track_weight").value)
+        )
+        selection_conf_weight_sum = (
+            self.selection_conf_qwen_weight
+            + self.selection_conf_yolo_weight
+            + self.selection_conf_track_weight
+        )
+        if selection_conf_weight_sum <= 1e-6:
+            self.selection_conf_qwen_weight = 0.6
+            self.selection_conf_yolo_weight = 0.25
+            self.selection_conf_track_weight = 0.15
+            selection_conf_weight_sum = 1.0
+        self.selection_conf_qwen_weight /= selection_conf_weight_sum
+        self.selection_conf_yolo_weight /= selection_conf_weight_sum
+        self.selection_conf_track_weight /= selection_conf_weight_sum
+        self.selection_conf_smoothing_frames = max(
+            1, int(self.get_parameter("selection_conf_smoothing_frames").value)
+        )
+        self.vlm_relabel_default_semantic_confidence = max(
+            0.0,
+            min(
+                1.0,
+                float(self.get_parameter("vlm_relabel_default_semantic_confidence").value),
+            ),
+        )
+        self.suppress_robot_self_candidates = bool(
+            self.get_parameter("suppress_robot_self_candidates").value
+        )
+        self.robot_self_inference_mask_bottom_band_px = max(
+            0, int(self.get_parameter("robot_self_inference_mask_bottom_band_px").value)
+        )
+        self.robot_self_bottom_touch_tolerance_px = max(
+            0, int(self.get_parameter("robot_self_bottom_touch_tolerance_px").value)
+        )
+        self.robot_self_candidate_min_y_ratio = max(
+            0.0,
+            min(1.0, float(self.get_parameter("robot_self_candidate_min_y_ratio").value)),
+        )
+        self.robot_self_candidate_max_height_px = max(
+            1, int(self.get_parameter("robot_self_candidate_max_height_px").value)
+        )
+        self.robot_self_candidate_max_width_px = max(
+            1, int(self.get_parameter("robot_self_candidate_max_width_px").value)
+        )
+        self.robot_self_candidate_max_mask_pixels = max(
+            1, int(self.get_parameter("robot_self_candidate_max_mask_pixels").value)
+        )
         self.log_interval_sec = max(1.0, float(self.get_parameter("log_interval_sec").value))
 
         self._session = requests.Session()
@@ -280,6 +361,7 @@ class DetectorSegNode(Node):
         self._next_track_id = 1
         self._latest_color_msg: Optional[Image] = None
         self._semantic_task: Optional[SemanticTask] = None
+        self._pick_phase = "idle"
         self._last_terminal_summary = ""
         self._last_candidate_summary = ""
         self._model = None
@@ -302,6 +384,7 @@ class DetectorSegNode(Node):
         self.create_subscription(
             SemanticTask, self.semantic_task_topic, self._on_semantic_task, qos_reliable
         )
+        self.create_subscription(String, self.pick_status_topic, self._on_pick_status, qos_reliable)
 
         self.detection_pub = self.create_publisher(
             DetectionResult, self.detection_result_topic, qos_reliable
@@ -457,6 +540,15 @@ class DetectorSegNode(Node):
             )
         else:
             self._pending_request = True
+
+    def _on_pick_status(self, msg: String) -> None:
+        phase = "idle"
+        try:
+            payload = json.loads(str(msg.data or "{}"))
+            phase = str(payload.get("phase") or "").strip().lower() or "idle"
+        except Exception:  # noqa: BLE001
+            phase = "idle"
+        self._pick_phase = phase
 
     def _maybe_run_inference(self) -> None:
         if not self.enabled or self.backend not in ("http_json", "ultralytics_local"):
@@ -616,8 +708,9 @@ class DetectorSegNode(Node):
         semantic_task: Optional[SemanticTask],
     ) -> dict[str, Any]:
         model = self._ensure_ultralytics_model()
+        detector_input_rgb = self._mask_robot_self_inference_region(image_rgb)
         prediction_kwargs: dict[str, Any] = {
-            "source": image_rgb,
+            "source": detector_input_rgb,
             "imgsz": self._effective_ultralytics_imgsz or self.ultralytics_imgsz,
             "conf": min(
                 self.confidence_threshold,
@@ -711,14 +804,23 @@ class DetectorSegNode(Node):
                 "image_height": int(color_msg.height),
                 "status": "selectable",
             }
+            if self._is_robot_self_candidate(candidate):
+                continue
             raw_candidates.append(candidate)
 
         self._associate_candidates_to_tracks(raw_candidates)
         self._schedule_candidate_relabels(image_rgb, raw_candidates, semantic_task)
 
         for candidate in raw_candidates:
+            self._apply_selection_confidence(candidate)
             semantic_bonus = self._candidate_semantic_bonus(candidate, semantic_task)
-            score = float(candidate.get("confidence", 0.0) or 0.0) + float(semantic_bonus)
+            score = float(
+                candidate.get(
+                    "selection_confidence_smoothed",
+                    candidate.get("selection_confidence", candidate.get("confidence", 0.0)),
+                )
+                or 0.0
+            ) + float(semantic_bonus)
             confidence_floor = self._candidate_confidence_floor(semantic_bonus, semantic_task)
             status = "selectable"
             if float(candidate.get("confidence", 0.0) or 0.0) < confidence_floor:
@@ -805,7 +907,12 @@ class DetectorSegNode(Node):
             ),
             task=semantic_task.task if semantic_task is not None else "pick",
             target_label=self._candidate_preferred_label(selected_candidate),
-            confidence=float(selected_candidate["confidence"]),
+            confidence=float(
+                selected_candidate.get(
+                    "selection_confidence_smoothed",
+                    selected_candidate.get("selection_confidence", selected_candidate["confidence"]),
+                )
+            ),
             need_human_confirm=False,
             reason="",
             image_width=int(color_msg.width),
@@ -833,6 +940,42 @@ class DetectorSegNode(Node):
                 semantic_task,
             )
         return payload
+
+    def _mask_robot_self_inference_region(self, image_rgb: np.ndarray) -> np.ndarray:
+        if (
+            not self.suppress_robot_self_candidates
+            or self.robot_self_inference_mask_bottom_band_px <= 0
+            or image_rgb.size == 0
+        ):
+            return image_rgb
+        masked = np.asarray(image_rgb, dtype=np.uint8).copy()
+        height = int(masked.shape[0])
+        band_px = min(height, int(self.robot_self_inference_mask_bottom_band_px))
+        if band_px <= 0:
+            return image_rgb
+        masked[height - band_px :, :, :] = 0
+        return masked
+
+    def _is_robot_self_candidate(self, candidate: dict[str, Any]) -> bool:
+        if not self.suppress_robot_self_candidates:
+            return False
+        bbox_xyxy = candidate.get("bbox_xyxy")
+        if not isinstance(bbox_xyxy, list) or len(bbox_xyxy) != 4:
+            return False
+        image_height = int(candidate.get("image_height", 0) or 0)
+        if image_height <= 0:
+            return False
+        x1, y1, x2, y2 = [int(value) for value in bbox_xyxy]
+        bbox_width = max(0, x2 - x1)
+        bbox_height = max(0, y2 - y1)
+        touches_bottom = (image_height - y2) <= self.robot_self_bottom_touch_tolerance_px
+        near_bottom = y1 >= int(round(float(image_height) * self.robot_self_candidate_min_y_ratio))
+        small_bbox = (
+            bbox_height <= self.robot_self_candidate_max_height_px
+            and bbox_width <= self.robot_self_candidate_max_width_px
+        )
+        small_mask = int(candidate.get("mask_pixels", 0) or 0) <= self.robot_self_candidate_max_mask_pixels
+        return touches_bottom and near_bottom and small_bbox and small_mask
 
     def _normalize_short_label(self, value: Any, *, max_chars: int = 48) -> str:
         text = str(value or "").replace("\n", " ").replace("\r", " ").strip()
@@ -935,6 +1078,17 @@ class DetectorSegNode(Node):
         )
         return "|".join([task, label, hint, excluded]).strip("|")
 
+    def _semantic_task_requested(self, semantic_task: Optional[SemanticTask]) -> bool:
+        if semantic_task is None:
+            return False
+        return bool(
+            str(semantic_task.target_label or "").strip()
+            or str(semantic_task.target_hint or "").strip()
+        )
+
+    def _vlm_focus_phase_active(self) -> bool:
+        return self._pick_phase in {"waiting_execute", "planning", "executing"}
+
     def _bbox_center(self, bbox_xyxy: Optional[list[int]]) -> tuple[float, float]:
         if not isinstance(bbox_xyxy, list) or len(bbox_xyxy) != 4:
             return (0.0, 0.0)
@@ -1010,7 +1164,11 @@ class DetectorSegNode(Node):
             "display_label": raw_label,
             "label_source": "yolo",
             "confidence": float(candidate.get("confidence", 0.0) or 0.0),
+            "semantic_confidence": float(candidate.get("confidence", 0.0) or 0.0),
             "mask_pixels": int(candidate.get("mask_pixels", 0) or 0),
+            "selection_conf_history": [],
+            "selection_confidence": float(candidate.get("confidence", 0.0) or 0.0),
+            "selection_confidence_smoothed": float(candidate.get("confidence", 0.0) or 0.0),
             "relabel_in_flight": False,
             "last_relabel_requested_at": 0.0,
             "last_relabel_completed_at": 0.0,
@@ -1039,6 +1197,74 @@ class DetectorSegNode(Node):
             track["display_label"] = raw_label
             track["label_zh"] = ""
             track["label_source"] = "yolo"
+
+    def _estimate_semantic_confidence(
+        self,
+        canonical_label: str,
+        label_zh: str,
+        raw_label: str,
+    ) -> float:
+        normalized_label = self._normalize_short_label(canonical_label or raw_label)
+        if not normalized_label:
+            return self.vlm_relabel_default_semantic_confidence
+        score = self.vlm_relabel_default_semantic_confidence
+        tokens = self._semantic_tokens(normalized_label)
+        if any(token in COLOR_HINT_TOKENS for token in tokens):
+            score += 0.12
+        if any(token in APPEARANCE_HINT_TOKENS for token in tokens):
+            score += 0.08
+        if label_zh:
+            score += 0.04
+        if self._is_ambiguous_label(normalized_label):
+            score -= 0.12
+        if self._normalized_label_key(normalized_label) == self._normalized_label_key(raw_label):
+            score -= 0.08
+        return max(0.05, min(0.95, score))
+
+    def _track_stability_confidence(self, track: Optional[dict[str, Any]]) -> float:
+        if not isinstance(track, dict):
+            return 0.0
+        consecutive_hits = max(0, int(track.get("consecutive_hits", 0) or 0))
+        return max(
+            0.0,
+            min(1.0, float(consecutive_hits) / float(max(1, self.selection_conf_smoothing_frames))),
+        )
+
+    def _apply_selection_confidence(self, candidate: dict[str, Any]) -> None:
+        yolo_confidence = max(0.0, min(1.0, float(candidate.get("confidence", 0.0) or 0.0)))
+        semantic_confidence = yolo_confidence
+        track_stability = 0.0
+        selection_confidence = (
+            self.selection_conf_qwen_weight * semantic_confidence
+            + self.selection_conf_yolo_weight * yolo_confidence
+        )
+        smoothed_selection_confidence = selection_confidence
+        track_id = int(candidate.get("track_id", -1) or -1)
+        with self._track_lock:
+            track = self._tracks.get(track_id)
+            if isinstance(track, dict):
+                if self._track_has_vlm_label(track):
+                    semantic_confidence = max(
+                        0.0,
+                        min(1.0, float(track.get("semantic_confidence", yolo_confidence) or yolo_confidence)),
+                    )
+                track_stability = self._track_stability_confidence(track)
+                selection_confidence = (
+                    self.selection_conf_qwen_weight * semantic_confidence
+                    + self.selection_conf_yolo_weight * yolo_confidence
+                    + self.selection_conf_track_weight * track_stability
+                )
+                history = list(track.get("selection_conf_history", []) or [])
+                history.append(float(selection_confidence))
+                history = history[-self.selection_conf_smoothing_frames :]
+                smoothed_selection_confidence = float(sum(history) / float(len(history)))
+                track["selection_conf_history"] = history
+                track["selection_confidence"] = float(selection_confidence)
+                track["selection_confidence_smoothed"] = float(smoothed_selection_confidence)
+        candidate["semantic_confidence"] = float(semantic_confidence)
+        candidate["track_stability"] = float(track_stability)
+        candidate["selection_confidence"] = float(selection_confidence)
+        candidate["selection_confidence_smoothed"] = float(smoothed_selection_confidence)
 
     def _reap_stale_tracks(self, now_sec: float) -> None:
         stale_ids = [
@@ -1116,6 +1342,20 @@ class DetectorSegNode(Node):
             label_age_sec = max(0.0, now_sec - float(track["last_relabel_completed_at"]))
         candidate["track_label_age_sec"] = label_age_sec
         candidate["track_relabel_reason"] = str(track.get("last_relabel_reason", "") or "")
+        candidate["semantic_confidence"] = float(
+            track.get("semantic_confidence", candidate.get("confidence", 0.0)) or 0.0
+        )
+        candidate["track_stability"] = self._track_stability_confidence(track)
+        candidate["selection_confidence"] = float(
+            track.get("selection_confidence", candidate.get("confidence", 0.0)) or 0.0
+        )
+        candidate["selection_confidence_smoothed"] = float(
+            track.get(
+                "selection_confidence_smoothed",
+                candidate.get("selection_confidence", candidate.get("confidence", 0.0)),
+            )
+            or 0.0
+        )
 
         if not self._track_has_vlm_label(track):
             return
@@ -1305,7 +1545,10 @@ class DetectorSegNode(Node):
         if bool(track.get("relabel_in_flight", False)):
             return ""
         last_requested_at = float(track.get("last_relabel_requested_at", 0.0) or 0.0)
-        if (now_sec - last_requested_at) < self.vlm_relabel_track_cooldown_sec:
+        cooldown_sec = self.vlm_relabel_track_cooldown_sec
+        if self._is_vlm_focus_candidate(track, candidate, semantic_task):
+            cooldown_sec = min(cooldown_sec, self.vlm_relabel_focus_track_cooldown_sec)
+        if (now_sec - last_requested_at) < cooldown_sec:
             return ""
 
         semantic_signature = self._semantic_signature(semantic_task)
@@ -1345,8 +1588,10 @@ class DetectorSegNode(Node):
 
     def _track_relabel_priority(
         self,
+        track: dict[str, Any],
         reason: str,
         candidate: dict[str, Any],
+        semantic_task: Optional[SemanticTask],
     ) -> float:
         base = {
             "semantic_target": 4.0,
@@ -1355,7 +1600,23 @@ class DetectorSegNode(Node):
             "low_confidence_stable": 2.0,
             "new_track": 1.0,
         }.get(reason, 0.0)
+        if self._is_vlm_focus_candidate(track, candidate, semantic_task):
+            base += 10.0
         return base + float(candidate.get("confidence", 0.0) or 0.0)
+
+    def _is_vlm_focus_candidate(
+        self,
+        track: dict[str, Any],
+        candidate: dict[str, Any],
+        semantic_task: Optional[SemanticTask],
+    ) -> bool:
+        if not self._semantic_task_requested(semantic_task):
+            return False
+        if not self._track_matches_semantic_target(track, semantic_task, candidate):
+            return False
+        if self._vlm_focus_phase_active():
+            return True
+        return bool(int(track.get("seen_count", 0) or 0) >= self.track_stable_frames_required)
 
     def _extract_candidate_crop_rgb(
         self,
@@ -1452,7 +1713,7 @@ class DetectorSegNode(Node):
         system_prompt = (
             "You relabel numbered object proposals from a robot camera. "
             "Return exactly one JSON object with no markdown. "
-            "Schema: {\"candidates\":[{\"index\":number,\"label_en\":string,\"label_zh\":string}]}. "
+            "Schema: {\"candidates\":[{\"index\":number,\"label_en\":string,\"label_zh\":string,\"semantic_confidence\":number}]}. "
             "Use very short noun phrases, not sentences, with 1 to 4 words per label. "
             "The first image is the full scene with numbered boxes. Later images are crops of those numbered boxes. "
             "Use the crop as primary evidence and the full scene only as context. "
@@ -1462,7 +1723,8 @@ class DetectorSegNode(Node):
             "Prefer color-plus-shape descriptions over generic class guesses. "
             "If the object looks like a smooth cylinder and you cannot clearly see a cup rim, handle, bottle neck, or can top, label it as cylinder instead of cup, bottle, vase, or can. "
             "Do not answer with vague words like object, item, thing. "
-            "Do not use dataset artifacts like remote, mouse, keyboard, cell phone unless the visible features clearly support that label."
+            "Do not use dataset artifacts like remote, mouse, keyboard, cell phone unless the visible features clearly support that label. "
+            "Also return semantic_confidence as a number from 0.0 to 1.0 for each candidate."
         )
 
         user_content: list[dict[str, Any]] = [
@@ -1514,7 +1776,7 @@ class DetectorSegNode(Node):
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.1,
-            "max_tokens": 320,
+            "max_tokens": 128,
             "response_format": {"type": "json_object"},
         }
         response = self._vlm_session.post(
@@ -1554,6 +1816,7 @@ class DetectorSegNode(Node):
                 "canonical_label": label_en,
                 "label_en": label_en,
                 "label_zh": label_zh,
+                "semantic_confidence": item.get("semantic_confidence"),
             }
         return relabeled
 
@@ -1583,6 +1846,16 @@ class DetectorSegNode(Node):
                         label_zh = self._normalize_short_label(track.get("label_zh"))
                     elif not canonical_label:
                         canonical_label = raw_label
+                    semantic_confidence_raw = item.get("semantic_confidence")
+                    try:
+                        semantic_confidence = float(semantic_confidence_raw)
+                    except (TypeError, ValueError):
+                        semantic_confidence = self._estimate_semantic_confidence(
+                            canonical_label=canonical_label or raw_label,
+                            label_zh=label_zh,
+                            raw_label=raw_label,
+                        )
+                    semantic_confidence = max(0.0, min(1.0, semantic_confidence))
                     display_label = self._compose_candidate_display_label(
                         canonical_label=canonical_label or raw_label,
                         label_zh=label_zh,
@@ -1593,6 +1866,7 @@ class DetectorSegNode(Node):
                         track["label_zh"] = label_zh
                         track["display_label"] = display_label
                         track["label_source"] = "vlm"
+                        track["semantic_confidence"] = float(semantic_confidence)
                     track["last_relabel_completed_at"] = now_sec
                     track["last_relabel_reason"] = str(spec.get("relabel_reason", "") or "")
                     track["last_semantic_signature"] = str(spec.get("semantic_signature", "") or "")
@@ -1659,19 +1933,40 @@ class DetectorSegNode(Node):
                 reason = self._track_relabel_reason(track, candidate, semantic_task, now_sec)
                 if not reason:
                     continue
-                priority = self._track_relabel_priority(reason, candidate)
+                priority = self._track_relabel_priority(
+                    track,
+                    reason,
+                    candidate,
+                    semantic_task,
+                )
                 eligible.append((priority, candidate, track, reason))
 
         if not eligible:
             return
 
         eligible.sort(key=lambda item: item[0], reverse=True)
+        focus_mode = False
+        focus_phase_active = self._vlm_focus_phase_active()
+        if self._semantic_task_requested(semantic_task):
+            focused = [
+                item
+                for item in eligible
+                if self._is_vlm_focus_candidate(item[2], item[1], semantic_task)
+            ]
+            if focused:
+                eligible = focused
+                focus_mode = True
+            elif focus_phase_active:
+                return
         pending_specs: list[dict[str, Any]] = []
         pending_candidates: list[dict[str, Any]] = []
         semantic_signature = self._semantic_signature(semantic_task)
+        candidate_limit = (
+            self.vlm_relabel_focus_top_k if focus_mode else self.vlm_relabel_top_k
+        )
         with self._track_lock:
             for _, candidate, track, reason in eligible:
-                if len(pending_specs) >= self.vlm_relabel_top_k:
+                if len(pending_specs) >= candidate_limit:
                     break
                 track_id = int(track.get("track_id", -1))
                 active_track = self._tracks.get(track_id)
@@ -1712,12 +2007,25 @@ class DetectorSegNode(Node):
             return
 
         overview_image_url = ""
-        if pending_candidates:
+        skip_overview = len(pending_specs) == 1 or (
+            focus_mode and self.vlm_relabel_focus_without_overview
+        )
+        if pending_candidates and not skip_overview:
             overview_rgb = self._render_vlm_relabel_context_rgb(image_rgb, pending_candidates)
             overview_image_url = (
                 "data:image/jpeg;base64,"
                 f"{encode_image_to_base64_jpeg(overview_rgb, self.vlm_relabel_jpeg_quality)}"
             )
+        self.get_logger().info(
+            "vlm relabel batch: focus_mode=%s candidates=%d overview=%s semantic_target=%s pick_phase=%s"
+            % (
+                str(focus_mode).lower(),
+                len(pending_specs),
+                "yes" if overview_image_url else "no",
+                semantic_signature or "<none>",
+                self._pick_phase,
+            )
+        )
         with self._vlm_relabel_lock:
             if self._vlm_relabel_in_flight:
                 self._rollback_pending_track_relabels(pending_specs)
@@ -1911,7 +2219,12 @@ class DetectorSegNode(Node):
         ranked = sorted(
             raw_candidates,
             key=lambda item: (
-                float(item["confidence"]),
+                float(
+                    item.get(
+                        "selection_confidence_smoothed",
+                        item.get("selection_confidence", item["confidence"]),
+                    )
+                ),
                 float(item["score"]),
             ),
             reverse=True,
@@ -1954,7 +2267,34 @@ class DetectorSegNode(Node):
             "display_label": display_label or canonical_label or raw_label,
             "label_source": str(candidate.get("label_source", "yolo") or "yolo"),
             "side": self._candidate_horizontal_region(candidate),
-            "confidence": round(float(candidate.get("confidence", 0.0)), 4),
+            "confidence": round(
+                float(
+                    candidate.get(
+                        "selection_confidence_smoothed",
+                        candidate.get("selection_confidence", candidate.get("confidence", 0.0)),
+                    )
+                ),
+                4,
+            ),
+            "yolo_confidence": round(float(candidate.get("confidence", 0.0)), 4),
+            "semantic_confidence": round(
+                float(candidate.get("semantic_confidence", candidate.get("confidence", 0.0))),
+                4,
+            ),
+            "track_stability": round(float(candidate.get("track_stability", 0.0)), 4),
+            "selection_confidence": round(
+                float(candidate.get("selection_confidence", candidate.get("confidence", 0.0))),
+                4,
+            ),
+            "selection_confidence_smoothed": round(
+                float(
+                    candidate.get(
+                        "selection_confidence_smoothed",
+                        candidate.get("selection_confidence", candidate.get("confidence", 0.0)),
+                    )
+                ),
+                4,
+            ),
             "confidence_floor": round(float(candidate.get("confidence_floor", 0.0)), 4),
             "semantic_bonus": round(float(candidate.get("semantic_bonus", 0.0)), 4),
             "score": round(float(candidate.get("score", 0.0)), 4),
@@ -1995,7 +2335,7 @@ class DetectorSegNode(Node):
                 track_suffix = f",track={track_id}"
             parts.append(
                 f"#{rank}:{label_text}"
-                f"(c={float(candidate['confidence']):.3f},"
+                f"(c={float(candidate.get('selection_confidence_smoothed', candidate.get('selection_confidence', candidate['confidence']))):.3f},"
                 f"b={float(candidate['semantic_bonus']):+.3f},"
                 f"s={float(candidate['score']):.3f},"
                 f"status={str(candidate['status'])}{track_suffix}{raw_suffix})"
@@ -2040,7 +2380,7 @@ class DetectorSegNode(Node):
             track_prefix = f"T{track_id} " if track_id >= 0 else ""
             label_text = (
                 f"#{rank} {track_prefix}{display_label} "
-                f"c={float(candidate['confidence']):.2f} "
+                f"c={float(candidate.get('selection_confidence_smoothed', candidate.get('selection_confidence', candidate['confidence']))):.2f} "
                 f"s={float(candidate['score']):.2f}"
             )
             text_y = y1 - 8 if y1 > 20 else y1 + 18

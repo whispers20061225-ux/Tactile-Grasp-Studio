@@ -54,6 +54,9 @@ detector_seg_node:
     vlm_relabel_cache_ttl_sec: 30.0
     vlm_relabel_min_interval_sec: 0.75
     vlm_relabel_track_cooldown_sec: 4.0
+    vlm_relabel_focus_top_k: 1
+    vlm_relabel_focus_track_cooldown_sec: 1.25
+    vlm_relabel_focus_without_overview: true
     vlm_relabel_low_confidence_threshold: 0.35
     vlm_relabel_ambiguous_labels: ["remote", "cup", "bottle", "can", "vase", "wine glass"]
     track_iou_threshold: 0.20
@@ -61,6 +64,18 @@ detector_seg_node:
     track_stale_sec: 10.0
     track_label_hold_sec: 2.0
     track_stable_frames_required: 2
+    selection_conf_qwen_weight: 0.6
+    selection_conf_yolo_weight: 0.25
+    selection_conf_track_weight: 0.15
+    selection_conf_smoothing_frames: 3
+    vlm_relabel_default_semantic_confidence: 0.65
+    suppress_robot_self_candidates: true
+    robot_self_inference_mask_bottom_band_px: 40
+    robot_self_bottom_touch_tolerance_px: 2
+    robot_self_candidate_min_y_ratio: 0.90
+    robot_self_candidate_max_height_px: 52
+    robot_self_candidate_max_width_px: 96
+    robot_self_candidate_max_mask_pixels: 2500
     log_interval_sec: 10.0
 
 cloud_filter_node:
@@ -74,16 +89,17 @@ cloud_filter_node:
     target_pose_topic: "/sim/perception/target_pose"
     target_pose_camera_topic: "/perception/target_pose_camera"
     target_locked_topic: "/sim/perception/target_locked"
+    pick_status_topic: "/sim/task/pick_status"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
     debug_topic: "/perception/target_cloud_debug"
     target_frame: "world"
     enabled: true
     publish_rate_hz: 4.0
-    detection_stale_sec: 6.5
+    detection_stale_sec: 9.0
     min_depth_m: 0.10
     max_depth_m: 2.00
     bbox_margin_px: 12
-    min_target_points: 24
+    min_target_points: 12
     depth_percentile_low: 30.0
     depth_band_m: 0.05
     voxel_size_m: 0.004
@@ -91,13 +107,15 @@ cloud_filter_node:
     open3d_outlier_nb_neighbors: 16
     open3d_outlier_std_ratio: 1.5
     visual_republish_rate_hz: 8.0
-    soft_lock_frames_required: 2
+    soft_lock_frames_required: 1
     soft_lock_match_distance_px: 48.0
     soft_lock_bbox_iou_threshold: 0.15
-    stable_frames_required: 2
-    lock_position_tol_m: 0.03
-    unlock_grace_sec: 1.2
-    unlock_miss_count_threshold: 3
+    stable_frames_required: 1
+    lock_position_tol_m: 0.04
+    unlock_grace_sec: 3.0
+    unlock_miss_count_threshold: 10
+    execution_unlock_grace_sec: 12.0
+    execution_unlock_miss_count_threshold: 80
     require_semantic_task_to_lock: true
     log_interval_sec: 8.0
 
@@ -108,6 +126,7 @@ grasp_backend_node:
     detection_result_topic: "/perception/detection_result"
     target_locked_topic: "/sim/perception/target_locked"
     refresh_request_topic: "/grasp/refresh_request"
+    pick_status_topic: "/sim/task/pick_status"
     depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
     camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
     candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
@@ -115,7 +134,7 @@ grasp_backend_node:
     backend: "ggcnn_local"
     backend_url: ""
     request_timeout_sec: 12.0
-    max_inference_rate_hz: 1.0
+    max_inference_rate_hz: 2.0
     sensor_stale_sec: 6.5
     max_points: 2048
     min_points_required: 32
@@ -149,6 +168,7 @@ grasp_backend_node:
     ggcnn_pregrasp_offset_m: 0.06
     visual_republish_rate_hz: 8.0
     log_interval_sec: 8.0
+    execution_cache_hold_sec: 20.0
 
 sim_search_sweep_node:
   ros__parameters:
@@ -160,7 +180,7 @@ sim_search_sweep_node:
     detection_result_topic: "/perception/detection_result"
     auto_start_enabled: false
     joint_state_topic: "/joint_states"
-    search_pose_deg: [-87.0, -72.0, 89.0, 89.0, -90.0]
+    search_pose_deg: [-87.0, -62.0, 102.0, 82.0, -90.0]
     scan_joint1_angles_deg: [-90.0, -84.0, -78.0, -72.0]
     startup_delay_sec: 4.0
     motion_duration_sec: 1.0
@@ -191,10 +211,20 @@ sim_search_sweep_node:
     target_session_bbox_iou_threshold: 0.15
     target_session_timeout_sec: 12.0
     hold_on_pick_error: true
-    failure_return_pose_deg: [-87.0, -72.0, 89.0, 89.0, -90.0]
+    failure_return_pose_deg: [-87.0, -62.0, 102.0, 82.0, -90.0]
+    failure_open_gripper_on_hold: true
+    failure_open_gripper_joint_id: 6
+    failure_open_gripper_angle_deg: -68.754936
+    failure_open_gripper_duration_ms: 1500
+    failure_open_gripper_wait: false
+    control_arm_move_joints_service: "/control/arm/move_joints"
 
 sim_pick_task_node:
   ros__parameters:
+    planning_time_sec: 5.0
+    planning_attempts: 10
+    candidate_screening_planning_time_sec: 0.3
+    candidate_screening_planning_attempts: 1
     velocity_scaling: 1.0
     acceleration_scaling: 1.0
     gripper_velocity_scaling: 1.0
@@ -204,24 +234,32 @@ sim_pick_task_node:
     debug_ranked_candidate_limit: 12
     return_named_target: "home"
     debug_return_named_target: "home"
+    home_gripper_named_target: "open"
+    apply_home_gripper_named_target_on_startup: true
     enforce_upright_orientation: true
     lock_joint_after_target_lock: false
     lock_joint_name: "arm_joint1"
     lock_joint_max_delta_deg: 180.0
     lock_joint_relaxed_delta_deg: 180.0
-    lock_wrist_joint_after_target_lock: true
+    lock_wrist_joint_after_target_lock: false
     wrist_joint_name: "arm_joint5"
     wrist_joint_max_delta_deg: 90.0
     wrist_joint_relaxed_delta_deg: 90.0
     stage_position_only_target: true
     pregrasp_position_only_target: true
+    external_orientation_sampling_enabled: true
+    external_orientation_sample_count: 11
+    external_orientation_sample_max_deg: 30.0
+    external_reduced_orientation_constraint_enabled: false
+    external_reduced_free_axis_tolerance_deg: 180.0
+    external_reduced_constrained_axis_tolerance_deg: 20.0
     camera_scoring_link: "camera_depth_optical_frame"
     camera_forward_alignment_threshold: 0.60
     camera_upright_alignment_threshold: 0.0
-    camera_forward_penalty_weight: 10.0
-    camera_upright_penalty_weight: 14.0
-    camera_trajectory_tilt_penalty_weight: 10.0
-    camera_flip_penalty_weight: 20.0
+    camera_forward_penalty_weight: 16.0
+    camera_upright_penalty_weight: 24.0
+    camera_trajectory_tilt_penalty_weight: 18.0
+    camera_flip_penalty_weight: 32.0
     camera_stable_tilt_reward_deg: 5.0
     camera_stable_reward_bonus: 2.5
     pregrasp_score_base: 30.0
@@ -230,17 +268,18 @@ sim_pick_task_node:
     path_distance_penalty_weight: 6.0
     approach_distance_penalty_weight: 4.0
     primary_joint_delta_penalty_weight: 2.6
-    wrist_joint_delta_penalty_weight: 0.0
+    wrist_joint_delta_penalty_weight: 2.8
     primary_joint_excursion_penalty_weight: 8.5
     secondary_joint_name: "arm_joint2"
-    secondary_joint_excursion_penalty_weight: 0.0
-    wrist_joint_excursion_penalty_weight: 0.0
+    secondary_joint_excursion_penalty_weight: 3.5
+    wrist_joint_excursion_penalty_weight: 6.0
     clearance_penalty_weight: 6.0
     grasp_base_roll_deg: 0.0
     grasp_base_pitch_deg: 90.0
     grasp_yaw_offset_deg: 0.0
     prefer_external_grasp_candidates: true
     require_external_grasp_candidates: true
+    include_table_collision_object: false
     include_target_collision_object: false
     external_grasp_pose_timeout_sec: 6.0
     refresh_grasp_candidates_topic: "/grasp/refresh_request"
@@ -248,9 +287,12 @@ sim_pick_task_node:
     external_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
     execution_debug_markers_topic: "/grasp/execution_debug_markers"
     pick_status_topic: "/sim/task/pick_status"
+    target_candidate_visible_topic: "/sim/perception/target_candidate_visible"
     execute_pick_service: "/task/execute_pick"
     reset_pick_session_service: "/task/reset_pick_session"
     require_user_confirmation: true
+    allow_soft_lock_pregrasp_prep: true
+    soft_lock_final_lock_timeout_sec: 1.0
     external_semantic_score_weight: 0.8
     external_confidence_score_weight: 0.6
     selected_pregrasp_pose_topic: "/grasp/selected_pregrasp_pose"
@@ -280,6 +322,22 @@ tactile_web_gateway:
     arm_state_topic: "/arm/state"
     execute_pick_service: "/task/execute_pick"
     reset_pick_session_service: "/task/reset_pick_session"
+    control_arm_enable_service: "/control/arm/enable"
+    control_arm_move_joints_service: "/control/arm/move_joints"
+    scene_reset_service: "/sim/world/reset"
+    scene_set_pose_service: "/sim/world/set_pose"
+    scene_pose_info_topic: "/sim/world/pose/info"
+    scene_target_model_name: "target_cylinder"
+    scene_reset_use_world_reset: false
+    scene_reset_delay_sec: 0.75
+    scene_reset_return_home_after_reset: true
+    scene_target_reset_pose: [0.50, 0.08, 0.44, 0.0, 0.0, 0.0, 1.0]
+    return_home_joint_ids: [1, 2, 3, 4, 5, 6]
+    return_home_joint_angles_deg: [3.0, -62.0, 102.0, 82.0, 0.0, -68.754936]
+    return_home_duration_ms: 3500
+    return_home_wait_for_completion: false
+    startup_prepare_home: true
+    startup_prepare_home_delay_sec: 6.0
     dialog_use_visual_context: true
     dialog_visual_input_mode: "annotated"
     dialog_visual_max_side_px: 896

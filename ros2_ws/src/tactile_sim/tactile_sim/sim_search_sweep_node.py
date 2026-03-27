@@ -12,6 +12,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tactile_interfaces.msg import DetectionResult
+from tactile_interfaces.srv import MoveArmJoints
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 
@@ -83,6 +84,12 @@ class SimSearchSweepNode(Node):
         self.declare_parameter("target_session_timeout_sec", 4.0)
         self.declare_parameter("hold_on_pick_error", True)
         self.declare_parameter("failure_return_pose_deg", [0.0, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("failure_open_gripper_on_hold", True)
+        self.declare_parameter("failure_open_gripper_joint_id", 6)
+        self.declare_parameter("failure_open_gripper_angle_deg", -68.754936)
+        self.declare_parameter("failure_open_gripper_duration_ms", 1500)
+        self.declare_parameter("failure_open_gripper_wait", False)
+        self.declare_parameter("control_arm_move_joints_service", "/control/arm/move_joints")
 
         self.trajectory_action_name = str(self.get_parameter("trajectory_action_name").value)
         target_locked_topic = str(self.get_parameter("target_locked_topic").value)
@@ -192,6 +199,24 @@ class SimSearchSweepNode(Node):
         if len(failure_return_pose_deg) != len(self.JOINT_NAMES):
             failure_return_pose_deg = [0.0] * len(self.JOINT_NAMES)
         self.failure_return_pose_deg = failure_return_pose_deg
+        self.failure_open_gripper_on_hold = bool(
+            self.get_parameter("failure_open_gripper_on_hold").value
+        )
+        self.failure_open_gripper_joint_id = int(
+            self.get_parameter("failure_open_gripper_joint_id").value
+        )
+        self.failure_open_gripper_angle_deg = float(
+            self.get_parameter("failure_open_gripper_angle_deg").value
+        )
+        self.failure_open_gripper_duration_ms = max(
+            100, int(self.get_parameter("failure_open_gripper_duration_ms").value)
+        )
+        self.failure_open_gripper_wait = bool(
+            self.get_parameter("failure_open_gripper_wait").value
+        )
+        self.control_arm_move_joints_service = str(
+            self.get_parameter("control_arm_move_joints_service").value
+        ).strip()
 
         self._locked = False
         self._locked_once = False
@@ -232,6 +257,11 @@ class SimSearchSweepNode(Node):
             FollowJointTrajectory,
             self.trajectory_action_name,
         )
+        self._move_joints_client = None
+        if self.control_arm_move_joints_service:
+            self._move_joints_client = self.create_client(
+                MoveArmJoints, self.control_arm_move_joints_service
+            )
 
         self.create_subscription(Bool, target_locked_topic, self._on_target_locked, 10)
         self.create_subscription(JointState, self.joint_state_topic, self._on_joint_state, 10)
@@ -293,11 +323,22 @@ class SimSearchSweepNode(Node):
             return
         was_locked = self._locked
         self._locked = bool(msg.data)
+        now_sec = self.get_clock().now().nanoseconds / 1e9
         if self._locked and not was_locked:
             if self.stop_after_first_lock:
                 self._locked_once = True
             self.get_logger().info("search sweep locked on target; holding position")
-        elif was_locked and not self._locked and not self.stop_after_first_lock and not self._pick_active:
+        elif (
+            was_locked
+            and not self._locked
+            and not self.stop_after_first_lock
+            and not self._pick_active
+        ):
+            if self._has_recent_visual_target(now_sec):
+                self.get_logger().info(
+                    "search sweep kept centering mode after hard lock dropped because the visual target is still tracked"
+                )
+                return
             self._next_motion_time = (
                 self.get_clock().now().nanoseconds / 1e9 + self.settle_duration_sec
             )
@@ -332,7 +373,14 @@ class SimSearchSweepNode(Node):
         if self._failure_hold:
             return
         was_candidate_visible = self._candidate_visible
-        self._candidate_visible = bool(msg.data)
+        requested_visible = bool(msg.data)
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if not requested_visible and self._has_recent_visual_target(now_sec):
+            self.get_logger().info(
+                "search sweep ignored candidate-visible drop because the visual target session is still active"
+            )
+            return
+        self._candidate_visible = requested_visible
         if self._candidate_visible and not was_candidate_visible:
             self.get_logger().info("search sweep candidate visible; switching to centering mode")
         elif (
@@ -564,6 +612,7 @@ class SimSearchSweepNode(Node):
         if self._failure_hold:
             if self._failure_return_pending and not self._goal_inflight:
                 self._failure_return_pending = False
+                self._request_failure_open_gripper()
                 self._send_goal(
                     list(self.failure_return_pose_deg),
                     "return to configured home pose after pick failure",
@@ -600,12 +649,20 @@ class SimSearchSweepNode(Node):
         self._send_goal(target_pose, f"scan joint1 -> {target_pose[0]:.1f}deg")
 
     def _should_center_target(self, now_sec: float) -> bool:
-        return bool(
-            self.enable_centering
-            and self._candidate_visible
-            and self._last_vision_result_ts > 0.0
+        return bool(self.enable_centering and self._has_recent_visual_target(now_sec))
+
+    def _has_recent_visual_target(self, now_sec: float) -> bool:
+        recent_detection = bool(
+            self._last_vision_result_ts > 0.0
             and (now_sec - self._last_vision_result_ts) <= self.vision_result_stale_sec
         )
+        recent_session = bool(
+            self._session_active
+            and self._session_last_seen_ts > 0.0
+            and (now_sec - self._session_last_seen_ts) <= self.target_session_timeout_sec
+            and (self._session_point_px is not None or self._session_bbox_xyxy is not None)
+        )
+        return bool((self._candidate_visible or recent_session) and recent_detection)
 
     def _run_centering(self, now_sec: float) -> bool:
         errors = self._compute_centering_errors()
@@ -808,6 +865,47 @@ class SimSearchSweepNode(Node):
         self._last_command_pose_deg = list(joint_angles_deg)
         send_future = self._trajectory_client.send_goal_async(goal)
         send_future.add_done_callback(lambda future: self._on_goal_response(future, label))
+
+    def _request_failure_open_gripper(self) -> None:
+        if not self.failure_open_gripper_on_hold or self._move_joints_client is None:
+            return
+        try:
+            if not self._move_joints_client.wait_for_service(timeout_sec=0.1):
+                self.get_logger().warn(
+                    "search sweep failure return could not open gripper: "
+                    "move_joints service unavailable"
+                )
+                return
+            request = MoveArmJoints.Request()
+            request.joint_ids = [int(self.failure_open_gripper_joint_id)]
+            request.angles_deg = [float(self.failure_open_gripper_angle_deg)]
+            request.duration_ms = int(self.failure_open_gripper_duration_ms)
+            request.wait = bool(self.failure_open_gripper_wait)
+            future = self._move_joints_client.call_async(request)
+            future.add_done_callback(self._on_failure_open_gripper_response)
+        except Exception as exc:  # pragma: no cover
+            self.get_logger().warn(
+                f"search sweep failure return failed to request gripper open: {exc}"
+            )
+
+    def _on_failure_open_gripper_response(self, future) -> None:
+        try:
+            response = future.result()
+        except Exception as exc:  # pragma: no cover
+            self.get_logger().warn(
+                f"search sweep failure return gripper-open call failed: {exc}"
+            )
+            return
+        if response is None:
+            self.get_logger().warn(
+                "search sweep failure return gripper-open call returned no response"
+            )
+            return
+        if not bool(response.success):
+            self.get_logger().warn(
+                "search sweep failure return gripper-open rejected: "
+                f"{response.message}"
+            )
 
     def _on_goal_response(self, future, label: str) -> None:
         try:

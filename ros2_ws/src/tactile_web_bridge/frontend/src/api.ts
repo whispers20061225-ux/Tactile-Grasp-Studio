@@ -149,3 +149,17 @@ export async function postReturnHome(): Promise<UiState> {
   });
   return response.state;
 }
+
+export async function postResetScene(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/reset-scene", {
+    method: "POST",
+  });
+  return response.state;
+}
+
+export async function postOpenDebugViews(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/debug/open-views", {
+    method: "POST",
+  });
+  return response.state;
+}

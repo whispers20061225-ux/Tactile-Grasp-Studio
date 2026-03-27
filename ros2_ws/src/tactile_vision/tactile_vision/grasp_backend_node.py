@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import math
 import sys
 import threading
@@ -141,6 +142,7 @@ class GraspBackendNode(Node):
         self.declare_parameter("detection_result_topic", "/perception/detection_result")
         self.declare_parameter("target_locked_topic", "/sim/perception/target_locked")
         self.declare_parameter("refresh_request_topic", "/grasp/refresh_request")
+        self.declare_parameter("pick_status_topic", "/sim/task/pick_status")
         self.declare_parameter(
             "depth_topic", "/camera/camera/aligned_depth_to_color/image_raw"
         )
@@ -204,14 +206,18 @@ class GraspBackendNode(Node):
         self.declare_parameter("ggcnn_bbox_margin_px", 20)
         self.declare_parameter("ggcnn_min_mask_pixels", 96)
         self.declare_parameter("ggcnn_pregrasp_offset_m", 0.06)
+        self.declare_parameter("ggcnn_mask_dilation_px", 6)
+        self.declare_parameter("ggcnn_allow_bbox_depth_fallback", True)
         self.declare_parameter("visual_republish_rate_hz", 8.0)
         self.declare_parameter("log_interval_sec", 8.0)
+        self.declare_parameter("execution_cache_hold_sec", 20.0)
 
         self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
         self.target_cloud_topic = str(self.get_parameter("target_cloud_topic").value)
         self.detection_result_topic = str(self.get_parameter("detection_result_topic").value)
         self.target_locked_topic = str(self.get_parameter("target_locked_topic").value)
         self.refresh_request_topic = str(self.get_parameter("refresh_request_topic").value)
+        self.pick_status_topic = str(self.get_parameter("pick_status_topic").value)
         self.depth_topic = str(self.get_parameter("depth_topic").value)
         self.camera_info_topic = str(self.get_parameter("camera_info_topic").value)
         self.candidate_grasp_proposal_array_topic = str(
@@ -324,10 +330,19 @@ class GraspBackendNode(Node):
         self.ggcnn_pregrasp_offset_m = max(
             0.01, float(self.get_parameter("ggcnn_pregrasp_offset_m").value)
         )
+        self.ggcnn_mask_dilation_px = max(
+            0, int(self.get_parameter("ggcnn_mask_dilation_px").value)
+        )
+        self.ggcnn_allow_bbox_depth_fallback = bool(
+            self.get_parameter("ggcnn_allow_bbox_depth_fallback").value
+        )
         self.visual_republish_rate_hz = max(
             0.2, float(self.get_parameter("visual_republish_rate_hz").value)
         )
         self.log_interval_sec = max(1.0, float(self.get_parameter("log_interval_sec").value))
+        self.execution_cache_hold_sec = max(
+            0.0, float(self.get_parameter("execution_cache_hold_sec").value)
+        )
 
         self._session = requests.Session()
         self._semantic_lock = threading.Lock()
@@ -343,6 +358,8 @@ class GraspBackendNode(Node):
         self._latest_camera_info: Optional[CameraInfo] = None
         self._latest_camera_info_ts = 0.0
         self._target_locked = False
+        self._execution_active = False
+        self._pick_phase = "idle"
         self._pending_request = False
         self._request_in_flight = False
         self._force_request_once = False
@@ -354,6 +371,8 @@ class GraspBackendNode(Node):
         self._last_visual_marker_ids: set[int] = set()
         self._last_visual_frame_id = "world"
         self._last_visual_proposal_array: Optional[GraspProposalArray] = None
+        self._execution_cached_proposal_array: Optional[GraspProposalArray] = None
+        self._execution_cached_proposal_ts = 0.0
         self._last_ggcnn_depth_roi_msg: Optional[Image] = None
         self._last_ggcnn_q_heatmap_msg: Optional[Image] = None
         self._last_ggcnn_angle_map_msg: Optional[Image] = None
@@ -394,6 +413,7 @@ class GraspBackendNode(Node):
         )
         self.create_subscription(Bool, self.target_locked_topic, self._on_target_locked, qos_reliable)
         self.create_subscription(Bool, self.refresh_request_topic, self._on_refresh_request, qos_reliable)
+        self.create_subscription(String, self.pick_status_topic, self._on_pick_status, qos_reliable)
         self.create_subscription(Image, self.depth_topic, self._on_depth_image, qos_sensor)
         self.create_subscription(
             CameraInfo, self.camera_info_topic, self._on_camera_info, qos_sensor
@@ -434,46 +454,81 @@ class GraspBackendNode(Node):
     def _on_semantic_task(self, msg: SemanticTask) -> None:
         with self._semantic_lock:
             self._semantic_task = msg
-        if self._target_locked:
+        if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_target_cloud(self, msg: PointCloud2) -> None:
         with self._sensor_lock:
             self._latest_target_cloud = msg
             self._latest_target_cloud_ts = time.time()
-        if self._target_locked:
+        if self._target_locked and not self._execution_active:
             self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_detection_result(self, msg: DetectionResult) -> None:
         with self._sensor_lock:
             self._latest_detection = msg
             self._latest_detection_ts = time.time()
-        if self._target_locked:
+        if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_depth_image(self, msg: Image) -> None:
         with self._sensor_lock:
             self._latest_depth_msg = msg
             self._latest_depth_ts = time.time()
-        if self._target_locked:
+        if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_camera_info(self, msg: CameraInfo) -> None:
         with self._sensor_lock:
             self._latest_camera_info = msg
             self._latest_camera_info_ts = time.time()
-        if self._target_locked:
+        if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_target_locked(self, msg: Bool) -> None:
         was_locked = self._target_locked
         self._target_locked = bool(msg.data)
         if self._target_locked and not was_locked:
             self._last_dispatched_target_signature = ""
-        self._pending_request = self._target_locked
+            if not self._execution_active:
+                self._clear_execution_cache()
+        self._pending_request = self._target_locked and not self._execution_active
+        if self._pending_request:
+            self._maybe_run_inference()
+
+    def _on_pick_status(self, msg: String) -> None:
+        phase = ""
+        executing = False
+        try:
+            payload = json.loads(str(msg.data or "{}"))
+            phase = str(payload.get("phase") or "").strip().lower()
+            executing = bool(payload.get("executing")) or phase == "executing"
+        except Exception:
+            phase = str(msg.data or "").strip().lower()
+            executing = phase == "executing"
+
+        self._pick_phase = phase or self._pick_phase
+        if executing and not self._execution_active:
+            if self._last_visual_proposal_array is not None:
+                self._cache_execution_proposals(self._last_visual_proposal_array)
+        if not executing and phase in ("idle", "completed", "error"):
+            self._clear_execution_cache()
+        self._execution_active = executing
+        if not self._execution_active and (self._target_locked or self._should_request_without_hard_lock()):
+            self._pending_request = True
+            self._maybe_run_inference()
 
     def _on_refresh_request(self, msg: Bool) -> None:
         if not bool(msg.data):
+            return
+        if self._execution_active and self._publish_execution_cache("execution_latched_cache"):
+            self._pending_request = False
+            self._force_request_once = False
             return
         self._force_request_once = True
         self._last_dispatched_target_signature = ""
@@ -483,6 +538,11 @@ class GraspBackendNode(Node):
 
     def _maybe_run_inference(self) -> None:
         if not self._pending_request:
+            return
+
+        if self._execution_active and self._publish_execution_cache("execution_latched_cache"):
+            self._pending_request = False
+            self._force_request_once = False
             return
 
         if self.backend == "disabled":
@@ -496,7 +556,7 @@ class GraspBackendNode(Node):
             return
 
         if self.backend in ("contact_graspnet_http", "ggcnn_local"):
-            if not self._target_locked:
+            if not self._target_locked and not self._should_request_without_hard_lock():
                 self._pending_request = False
                 return
             if not self._detection_depth_camera_inputs_ready():
@@ -572,6 +632,7 @@ class GraspBackendNode(Node):
                 raise ValueError(f"unsupported grasp backend: {self.backend}")
 
             proposal_array = self._parse_proposal_array(parsed)
+            self._cache_execution_proposals(proposal_array)
             self.proposal_pub.publish(proposal_array)
             self._publish_candidate_visuals(proposal_array)
             self._publish_debug(
@@ -589,6 +650,8 @@ class GraspBackendNode(Node):
         except Exception as exc:  # noqa: BLE001
             message = str(exc).strip()
             self.get_logger().warn(f"grasp backend inference failed: {message}")
+            if self._execution_active and self._publish_execution_cache(f"{self.backend} cached: {message}"):
+                return
             self._publish_debug({"status": "error", "backend": self.backend, "reason": str(exc)})
             if self.publish_empty_on_failure:
                 empty = GraspProposalArray()
@@ -605,6 +668,22 @@ class GraspBackendNode(Node):
                 and self._latest_camera_info is not None
             )
 
+    def _should_request_without_hard_lock(self) -> bool:
+        if self._execution_active:
+            return False
+        with self._sensor_lock:
+            detection = self._latest_detection
+        if detection is None:
+            return False
+        if not bool(detection.accepted) or not bool(detection.candidate_visible):
+            return False
+        target_label = str(detection.target_label or "").strip()
+        if not target_label:
+            return False
+        if self._pick_phase in ("error", "completed"):
+            return False
+        return True
+
     def _log_precheck_state(self, summary: str) -> None:
         now = time.time()
         if (
@@ -615,6 +694,40 @@ class GraspBackendNode(Node):
         self._last_precheck_summary = summary
         self._last_precheck_log_ts = now
         self.get_logger().info(summary)
+
+    def _clear_execution_cache(self) -> None:
+        self._execution_cached_proposal_array = None
+        self._execution_cached_proposal_ts = 0.0
+
+    def _cache_execution_proposals(self, proposal_array: Optional[GraspProposalArray]) -> None:
+        if proposal_array is None or not proposal_array.proposals:
+            return
+        self._execution_cached_proposal_array = copy.deepcopy(proposal_array)
+        self._execution_cached_proposal_ts = time.time()
+
+    def _publish_execution_cache(self, reason: str) -> bool:
+        cached = self._execution_cached_proposal_array
+        if cached is None or not cached.proposals:
+            return False
+        age_sec = time.time() - self._execution_cached_proposal_ts
+        if self.execution_cache_hold_sec > 0.0 and age_sec > self.execution_cache_hold_sec:
+            return False
+        proposal_array = copy.deepcopy(cached)
+        self.proposal_pub.publish(proposal_array)
+        self._publish_candidate_visuals(proposal_array)
+        self._publish_debug(
+            {
+                "status": "cached",
+                "backend": self.backend,
+                "reason": reason,
+                "proposal_count": len(proposal_array.proposals),
+                "frame_id": proposal_array.header.frame_id,
+                "selected_index": int(proposal_array.selected_index),
+                "phase": self._pick_phase,
+                "cache_age_sec": round(float(age_sec), 3),
+            }
+        )
+        return True
 
     def _get_contact_graspnet_target_signature(self) -> str:
         with self._sensor_lock:
@@ -734,6 +847,7 @@ class GraspBackendNode(Node):
             f"backend=ggcnn_local target={target_label} "
             f"roi={int(context['roi_xyxy'][2] - context['roi_xyxy'][0])}x{int(context['roi_xyxy'][3] - context['roi_xyxy'][1])} "
             f"mask_pixels={int(context['roi_mask_pixels'])} "
+            f"mask_mode={str(context['roi_mask_mode'])} "
             f"valid_depth={int(context['roi_target_valid_depth_pixels'])} "
             f"proposals={len(proposals)} "
             f"top_score={selected_score:.3f} "
@@ -748,6 +862,7 @@ class GraspBackendNode(Node):
                 "inference_sec": inference_sec,
                 "proposal_count": len(proposals),
                 "roi_xyxy": list(context["roi_xyxy"]),
+                "roi_mask_mode": str(context["roi_mask_mode"]),
                 "target_signature": str(context["target_signature"]),
             },
         }
@@ -870,15 +985,39 @@ class GraspBackendNode(Node):
             )
 
         roi_valid_depth_mask = np.isfinite(roi_depth) & (roi_depth > 0.0)
-        roi_target_valid_depth_mask = roi_valid_depth_mask & roi_mask
+        effective_roi_mask = roi_mask.copy()
+        mask_mode = "mask"
+        roi_target_valid_depth_mask = roi_valid_depth_mask & effective_roi_mask
         roi_target_valid_depth_pixels = int(np.count_nonzero(roi_target_valid_depth_mask))
+        if (
+            roi_target_valid_depth_pixels <= 0
+            and self.ggcnn_mask_dilation_px > 0
+            and roi_mask_pixels > 0
+        ):
+            kernel_size = max(1, int(self.ggcnn_mask_dilation_px) * 2 + 1)
+            kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+            dilated_mask = cv2.dilate(roi_mask.astype(np.uint8), kernel, iterations=1) > 0
+            dilated_depth_mask = roi_valid_depth_mask & dilated_mask
+            dilated_depth_pixels = int(np.count_nonzero(dilated_depth_mask))
+            if dilated_depth_pixels > 0:
+                effective_roi_mask = dilated_mask
+                roi_target_valid_depth_mask = dilated_depth_mask
+                roi_target_valid_depth_pixels = dilated_depth_pixels
+                mask_mode = "dilated_mask"
+
+        if roi_target_valid_depth_pixels <= 0 and self.ggcnn_allow_bbox_depth_fallback:
+            roi_target_valid_depth_mask = roi_valid_depth_mask
+            roi_target_valid_depth_pixels = int(np.count_nonzero(roi_target_valid_depth_mask))
+            if roi_target_valid_depth_pixels > 0:
+                effective_roi_mask = roi_valid_depth_mask.copy()
+                mask_mode = "bbox_valid_depth"
         if roi_target_valid_depth_pixels <= 0:
             raise ValueError("no valid masked depth pixels for GG-CNN")
 
         target_depth_m = float(np.median(roi_depth[roi_target_valid_depth_mask]))
         network_input, resized_mask = self._preprocess_ggcnn_depth_roi(
             depth_roi=roi_depth,
-            roi_mask=roi_mask,
+            roi_mask=effective_roi_mask,
         )
         source_frame = (
             str(camera_info.header.frame_id or "").strip() or
@@ -914,6 +1053,7 @@ class GraspBackendNode(Node):
             "roi_xyxy": (roi_x0, roi_y0, roi_x1, roi_y1),
             "roi_mask_pixels": roi_mask_pixels,
             "roi_target_valid_depth_pixels": roi_target_valid_depth_pixels,
+            "roi_mask_mode": mask_mode,
             "network_input": network_input,
             "resized_mask": resized_mask,
             "input_size": self.ggcnn_input_size,
@@ -2125,6 +2265,15 @@ class GraspBackendNode(Node):
                 f"target={target_label} proposals={int(payload.get('proposal_count', 0))} "
                 f"selected_index={int(payload.get('selected_index', 0))} "
                 f"frame={str(payload.get('frame_id') or '<unknown>')}"
+            )
+        if status == "cached":
+            return (
+                "grasp backend cache reuse: "
+                f"phase={str(payload.get('phase') or '<unknown>')} "
+                f"proposals={int(payload.get('proposal_count', 0))} "
+                f"selected_index={int(payload.get('selected_index', 0))} "
+                f"age={float(payload.get('cache_age_sec', 0.0)):.2f}s "
+                f"reason={str(payload.get('reason') or '<unknown>')}"
             )
         reason = str(payload.get("reason") or status or "unknown")
         return f"grasp backend decision: no grasp proposals ({reason})"

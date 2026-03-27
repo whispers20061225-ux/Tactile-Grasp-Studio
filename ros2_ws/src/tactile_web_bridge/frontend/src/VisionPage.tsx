@@ -12,6 +12,11 @@ type VisionPageProps = {
 
 const OVERLAY_CONFIDENCE_FLOOR = 0.07;
 
+function overlayConfidence(candidate: CandidateDebug | null | undefined): number {
+  if (!candidate) return 0;
+  return candidate.yolo_confidence ?? candidate.confidence ?? 0;
+}
+
 function candidateDisplayLabel(candidate: CandidateDebug | null | undefined): string {
   if (!candidate) return "--";
   return candidate.display_label || candidate.label_zh || candidate.canonical_label || candidate.label || "--";
@@ -31,7 +36,7 @@ export function VisionPage(props: VisionPageProps) {
     return Array.isArray(fallback) ? fallback : [];
   }, [props.state.vision.debug, props.state.vision.debug_candidates]);
   const visibleCandidates = useMemo<CandidateDebug[]>(
-    () => visionCandidates.filter((candidate) => candidate.confidence >= OVERLAY_CONFIDENCE_FLOOR),
+    () => visionCandidates.filter((candidate) => overlayConfidence(candidate) >= OVERLAY_CONFIDENCE_FLOOR),
     [visionCandidates],
   );
   const hoveredCandidate = useMemo(
@@ -56,7 +61,7 @@ export function VisionPage(props: VisionPageProps) {
       );
     }
 
-    if (selected?.bbox_xyxy && selected.bbox_xyxy.length === 4 && selected.confidence >= OVERLAY_CONFIDENCE_FLOOR) {
+    if (selected?.bbox_xyxy && selected.bbox_xyxy.length === 4 && overlayConfidence(selected) >= OVERLAY_CONFIDENCE_FLOOR) {
       addBox(
         selected.bbox_xyxy,
         `Selected: ${candidateDisplayLabel(selected)} ${formatNumber(selected.confidence, 2)}`,
@@ -73,7 +78,7 @@ export function VisionPage(props: VisionPageProps) {
     if (
       hoveredCandidate?.bbox_xyxy &&
       hoveredCandidate.bbox_xyxy.length === 4 &&
-      hoveredCandidate.confidence >= OVERLAY_CONFIDENCE_FLOOR
+      overlayConfidence(hoveredCandidate) >= OVERLAY_CONFIDENCE_FLOOR
     ) {
       addBox(
         hoveredCandidate.bbox_xyxy,

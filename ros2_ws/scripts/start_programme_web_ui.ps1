@@ -9,8 +9,11 @@ $ErrorActionPreference = "Stop"
 $runtimeDir = Join-Path $env:LOCALAPPDATA "ProgrammeWebUI"
 $watchdogPidFile = Join-Path $runtimeDir "watchdog.win.pid"
 $watchdogLog = Join-Path $runtimeDir "watchdog.log"
+$debugHelperPidFile = Join-Path $runtimeDir "debug-helper.win.pid"
 $linuxStartScript = "/home/whispers/programme/ros2_ws/scripts/start_programme_web_ui.sh"
 $stopScript = Join-Path $PSScriptRoot "stop_programme_web_ui.ps1"
+$debugHelperScript = Join-Path $PSScriptRoot "programme_debug_helper.ps1"
+$debugHelperLog = Join-Path $runtimeDir "debug-helper.log"
 
 function Test-HttpReady {
     param([Parameter(Mandatory = $true)][string]$Url)
@@ -103,6 +106,18 @@ $watchdogProcess = Start-Process -FilePath "powershell.exe" `
     -PassThru
 Set-Content -Path $watchdogPidFile -Value ([string]$watchdogProcess.Id) -Encoding ascii
 
+$debugHelperProcess = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& `"$debugHelperScript`" -Distro `"$Distro`""
+    ) `
+    -WindowStyle Hidden `
+    -PassThru
+Set-Content -Path $debugHelperPidFile -Value ([string]$debugHelperProcess.Id) -Encoding ascii
+
 if (-not $NoBrowser) {
     Start-Process "http://127.0.0.1:5173/control" | Out-Null
 }
@@ -112,3 +127,5 @@ Write-Host "[start] control page: http://127.0.0.1:5173/control"
 Write-Host "[start] gateway root: http://127.0.0.1:8765/"
 Write-Host "[start] watchdog pid file: $watchdogPidFile"
 Write-Host "[start] watchdog log: $watchdogLog"
+Write-Host "[start] debug helper pid file: $debugHelperPidFile"
+Write-Host "[start] debug helper log: $debugHelperLog"

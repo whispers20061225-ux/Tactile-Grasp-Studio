@@ -53,6 +53,21 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_world,
         description="Gazebo world file used by the MoveIt + Gazebo demo",
     )
+    spawn_x_arg = DeclareLaunchArgument(
+        "spawn_x",
+        default_value="0.24",
+        description="Robot spawn x position propagated to Gazebo and MoveIt robot_description",
+    )
+    spawn_y_arg = DeclareLaunchArgument(
+        "spawn_y",
+        default_value="0.0",
+        description="Robot spawn y position propagated to Gazebo and MoveIt robot_description",
+    )
+    spawn_z_arg = DeclareLaunchArgument(
+        "spawn_z",
+        default_value="0.405",
+        description="Robot spawn z position propagated to Gazebo and MoveIt robot_description",
+    )
     gpu_adapter_arg = DeclareLaunchArgument(
         "gpu_adapter",
         default_value="NVIDIA",
@@ -98,6 +113,9 @@ def generate_launch_description() -> LaunchDescription:
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
     server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     world = LaunchConfiguration("world")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     rviz_config = LaunchConfiguration("rviz_config")
     moveit_start_delay_sec = LaunchConfiguration("moveit_start_delay_sec")
@@ -108,6 +126,14 @@ def generate_launch_description() -> LaunchDescription:
 
     moveit_config = (
         MoveItConfigsBuilder("dofbot", package_name="tactile_moveit_config")
+        .robot_description(
+            mappings={
+                "base_world_x": spawn_x,
+                "base_world_y": spawn_y,
+                "base_world_z": spawn_z,
+            }
+        )
+        .robot_description_kinematics()
         .planning_pipelines(default_planning_pipeline="ompl", pipelines=["ompl"])
         .trajectory_execution(moveit_manage_controllers=False)
         .planning_scene_monitor(
@@ -125,6 +151,9 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "world": world,
+            "spawn_x": spawn_x,
+            "spawn_y": spawn_y,
+            "spawn_z": spawn_z,
             "start_gui": start_gazebo_gui,
             "use_sim_time": use_sim_time,
             "use_gpu_accel": use_gpu_accel,
@@ -248,6 +277,9 @@ def generate_launch_description() -> LaunchDescription:
             use_gpu_accel_arg,
             server_use_gpu_accel_arg,
             world_arg,
+            spawn_x_arg,
+            spawn_y_arg,
+            spawn_z_arg,
             gpu_adapter_arg,
             rviz_config_arg,
             moveit_start_delay_sec_arg,

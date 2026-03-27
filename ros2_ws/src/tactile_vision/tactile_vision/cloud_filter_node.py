@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 from typing import Optional
@@ -45,6 +46,7 @@ class CloudFilterNode(Node):
         self.declare_parameter("target_pose_topic", "/sim/perception/target_pose")
         self.declare_parameter("target_pose_camera_topic", "/perception/target_pose_camera")
         self.declare_parameter("target_locked_topic", "/sim/perception/target_locked")
+        self.declare_parameter("pick_status_topic", "/sim/task/pick_status")
         self.declare_parameter("semantic_task_topic", "/qwen/semantic_task")
         self.declare_parameter(
             "candidate_visible_topic", "/sim/perception/target_candidate_visible"
@@ -72,6 +74,8 @@ class CloudFilterNode(Node):
         self.declare_parameter("lock_position_tol_m", 0.03)
         self.declare_parameter("unlock_grace_sec", 1.2)
         self.declare_parameter("unlock_miss_count_threshold", 3)
+        self.declare_parameter("execution_unlock_grace_sec", 8.0)
+        self.declare_parameter("execution_unlock_miss_count_threshold", 50)
         self.declare_parameter("require_semantic_task_to_lock", False)
         self.declare_parameter("log_interval_sec", 8.0)
 
@@ -87,6 +91,7 @@ class CloudFilterNode(Node):
             self.get_parameter("target_pose_camera_topic").value
         )
         self.target_locked_topic = str(self.get_parameter("target_locked_topic").value)
+        self.pick_status_topic = str(self.get_parameter("pick_status_topic").value)
         self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
         self.candidate_visible_topic = str(self.get_parameter("candidate_visible_topic").value)
         self.debug_topic = str(self.get_parameter("debug_topic").value)
@@ -136,6 +141,12 @@ class CloudFilterNode(Node):
         self.unlock_miss_count_threshold = max(
             1, int(self.get_parameter("unlock_miss_count_threshold").value)
         )
+        self.execution_unlock_grace_sec = max(
+            0.0, float(self.get_parameter("execution_unlock_grace_sec").value)
+        )
+        self.execution_unlock_miss_count_threshold = max(
+            1, int(self.get_parameter("execution_unlock_miss_count_threshold").value)
+        )
         self.require_semantic_task_to_lock = bool(
             self.get_parameter("require_semantic_task_to_lock").value
         )
@@ -164,6 +175,8 @@ class CloudFilterNode(Node):
         self._last_target_pose_camera_position: Optional[np.ndarray] = None
         self._last_target_pose_camera_frame = ""
         self._semantic_task_active = not self.require_semantic_task_to_lock
+        self._execution_active = False
+        self._pick_phase = "idle"
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
 
@@ -190,6 +203,7 @@ class CloudFilterNode(Node):
         self.create_subscription(
             SemanticTask, self.semantic_task_topic, self._on_semantic_task, qos_reliable
         )
+        self.create_subscription(String, self.pick_status_topic, self._on_pick_status, qos_reliable)
         self.create_subscription(Image, self.depth_topic, self._on_depth_image, qos_sensor)
         self.create_subscription(
             CameraInfo, self.camera_info_topic, self._on_camera_info, qos_sensor
@@ -238,6 +252,19 @@ class CloudFilterNode(Node):
             or str(msg.task or "").strip()
         )
 
+    def _on_pick_status(self, msg: String) -> None:
+        phase = ""
+        executing = False
+        try:
+            payload = json.loads(str(msg.data or "{}"))
+            phase = str(payload.get("phase") or "").strip().lower()
+            executing = bool(payload.get("executing")) or phase == "executing"
+        except Exception:
+            phase = str(msg.data or "").strip().lower()
+            executing = phase == "executing"
+        self._pick_phase = phase or self._pick_phase
+        self._execution_active = executing
+
     def _on_depth_image(self, msg: Image) -> None:
         with self._sensor_lock:
             self._latest_depth_msg = msg
@@ -260,6 +287,7 @@ class CloudFilterNode(Node):
 
         if detection is None or depth_msg is None or camera_info is None:
             return
+        had_soft_tracking = bool(self._soft_locked or self._soft_stable_count > 0)
         if now_sec - detection_ts > self.detection_stale_sec:
             if self._hold_hard_lock_grace(
                 "stale_detection",
@@ -267,12 +295,26 @@ class CloudFilterNode(Node):
                 candidate_visible=bool(self._soft_locked or self._last_lock_state),
             ):
                 return
+            if had_soft_tracking:
+                self._clear_hard_state()
+                self._publish_soft_state(
+                    "stale_detection",
+                    str(detection.target_label or self._soft_last_label or ""),
+                )
+                return
             self._reset_state("stale_detection")
             return
 
         soft_visible = self._update_soft_lock_from_detection(detection)
         if not soft_visible:
             if self._hold_hard_lock_grace("soft_lock_lost", now_sec, candidate_visible=False):
+                return
+            if had_soft_tracking:
+                self._clear_hard_state()
+                self._publish_soft_state(
+                    str(detection.reason or "soft_lock_lost"),
+                    str(detection.target_label or self._soft_last_label or ""),
+                )
                 return
             self._reset_state(str(detection.reason or "soft_lock_lost"))
             return
@@ -342,7 +384,10 @@ class CloudFilterNode(Node):
         locked = bool(
             self._soft_locked and self._stable_count >= self.stable_frames_required
         )
-        if self.require_semantic_task_to_lock and not self._semantic_task_active:
+        semantic_gate_allows_lock, semantic_gate_reason = self._semantic_gate_state(
+            detection
+        )
+        if not semantic_gate_allows_lock:
             locked = False
         self._unlock_pending_since = 0.0
         self._unlock_miss_count = 0
@@ -416,6 +461,10 @@ class CloudFilterNode(Node):
                 "soft_stable_count": int(self._soft_stable_count),
                 "locked": locked,
                 "stable_count": int(self._stable_count),
+                "semantic_task_active": bool(self._semantic_task_active),
+                "semantic_gate_allows_lock": bool(semantic_gate_allows_lock),
+                "semantic_gate_reason": semantic_gate_reason,
+                "pick_phase": self._pick_phase,
                 "mask_used": bool(detection.has_mask),
                 "open3d_filtered": bool(self.open3d_remove_outliers and open3d_available()),
             }
@@ -437,7 +486,10 @@ class CloudFilterNode(Node):
                 f"locked={locked} "
                 f"points={points_world.shape[0]} "
                 f"soft_frames={self._soft_stable_count} "
-                f"stable_frames={self._stable_count}"
+                f"stable_frames={self._stable_count} "
+                f"semantic_active={self._semantic_task_active} "
+                f"semantic_gate={semantic_gate_reason} "
+                f"phase={self._pick_phase}"
             )
 
     def _update_soft_lock_from_detection(self, detection: DetectionResult) -> bool:
@@ -503,8 +555,6 @@ class CloudFilterNode(Node):
         )
         self._soft_last_label = label
         self._soft_locked = bool(self._soft_stable_count >= self.soft_lock_frames_required)
-        if self.require_semantic_task_to_lock and not self._semantic_task_active:
-            self._soft_locked = False
         return True
 
     def _bbox_iou(self, bbox_a: np.ndarray, bbox_b: np.ndarray) -> float:
@@ -526,6 +576,23 @@ class CloudFilterNode(Node):
             return 0.0
         return inter_area / denom
 
+    def _semantic_gate_state(self, detection: DetectionResult) -> tuple[bool, str]:
+        if not self.require_semantic_task_to_lock:
+            return True, "disabled"
+        if self._semantic_task_active:
+            return True, "semantic_task_active"
+        label_present = bool(str(detection.target_label or self._soft_last_label or "").strip())
+        if self._pick_phase in {"planning", "executing"} and label_present:
+            return True, "pick_phase_active"
+        if (
+            bool(detection.accepted)
+            and bool(detection.candidate_visible)
+            and bool(self._soft_locked)
+            and label_present
+        ):
+            return True, "stable_visible_target"
+        return False, "semantic_task_required"
+
     def _clear_soft_state(self) -> None:
         self._soft_last_point_px = None
         self._soft_last_bbox_xyxy = None
@@ -538,14 +605,21 @@ class CloudFilterNode(Node):
         self._last_world_position = None
 
     def _hold_hard_lock_grace(self, reason: str, now_sec: float, candidate_visible: bool) -> bool:
-        if not self._last_lock_state or self.unlock_grace_sec <= 0.0:
+        grace_sec = self.unlock_grace_sec
+        miss_threshold = self.unlock_miss_count_threshold
+        if self._execution_active:
+            grace_sec = max(grace_sec, self.execution_unlock_grace_sec)
+            miss_threshold = max(
+                miss_threshold, self.execution_unlock_miss_count_threshold
+            )
+        if not self._last_lock_state or grace_sec <= 0.0:
             return False
 
         if self._unlock_pending_since <= 0.0:
             self._unlock_pending_since = now_sec
         self._unlock_miss_count += 1
-        within_time = (now_sec - self._unlock_pending_since) <= self.unlock_grace_sec
-        within_count = self._unlock_miss_count < self.unlock_miss_count_threshold
+        within_time = (now_sec - self._unlock_pending_since) <= grace_sec
+        within_count = self._unlock_miss_count < miss_threshold
         if not (within_time and within_count):
             return False
 
@@ -561,7 +635,9 @@ class CloudFilterNode(Node):
                 "locked": True,
                 "stable_count": int(self._stable_count),
                 "miss_count": int(self._unlock_miss_count),
-                "grace_sec": float(self.unlock_grace_sec),
+                "grace_sec": float(grace_sec),
+                "execution_active": bool(self._execution_active),
+                "phase": self._pick_phase,
             }
         )
         self.debug_pub.publish(msg)
@@ -569,6 +645,7 @@ class CloudFilterNode(Node):
         return True
 
     def _publish_soft_state(self, reason: str, target_label: str) -> None:
+        self._republish_last_visuals()
         self.target_locked_pub.publish(Bool(data=False))
         self.candidate_visible_pub.publish(Bool(data=True))
         msg = String()
