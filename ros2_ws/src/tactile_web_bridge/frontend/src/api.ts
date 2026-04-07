@@ -121,6 +121,7 @@ export async function postOverride(draft: SemanticDraft): Promise<UiState> {
       task: draft.task,
       target_label: draft.target_label,
       target_hint: draft.target_hint,
+      target_instance: draft.target_instance,
       gripper: draft.gripper,
       constraints: draft.constraints,
       excluded_labels: draft.excluded_labels,
@@ -138,6 +139,27 @@ export async function postReplan(): Promise<UiState> {
 
 export async function postExecute(): Promise<UiState> {
   const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/execute", {
+    method: "POST",
+  });
+  return response.state;
+}
+
+export async function postReturnHome(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/return-home", {
+    method: "POST",
+  });
+  return response.state;
+}
+
+export async function postResetScene(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/reset-scene", {
+    method: "POST",
+  });
+  return response.state;
+}
+
+export async function postOpenDebugViews(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/debug/open-views", {
     method: "POST",
   });
   return response.state;

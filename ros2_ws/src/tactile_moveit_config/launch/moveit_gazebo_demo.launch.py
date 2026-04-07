@@ -53,10 +53,35 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_world,
         description="Gazebo world file used by the MoveIt + Gazebo demo",
     )
+    spawn_x_arg = DeclareLaunchArgument(
+        "spawn_x",
+        default_value="0.24",
+        description="Robot spawn x position propagated to Gazebo and MoveIt robot_description",
+    )
+    spawn_y_arg = DeclareLaunchArgument(
+        "spawn_y",
+        default_value="0.0",
+        description="Robot spawn y position propagated to Gazebo and MoveIt robot_description",
+    )
+    spawn_z_arg = DeclareLaunchArgument(
+        "spawn_z",
+        default_value="0.405",
+        description="Robot spawn z position propagated to Gazebo and MoveIt robot_description",
+    )
     gpu_adapter_arg = DeclareLaunchArgument(
         "gpu_adapter",
         default_value="NVIDIA",
         description="Preferred GPU adapter name for WSLg D3D12 rendering",
+    )
+    sim_start_demo_task_node_arg = DeclareLaunchArgument(
+        "sim_start_demo_task_node",
+        default_value="true",
+        description="Start the legacy phase6 demo_task_node inside the Gazebo sim chain",
+    )
+    sim_start_ui_subscriber_arg = DeclareLaunchArgument(
+        "sim_start_ui_subscriber",
+        default_value="true",
+        description="Start the legacy phase6 tactile_ui_subscriber inside the Gazebo sim chain",
     )
     rviz_config_arg = DeclareLaunchArgument(
         "rviz_config",
@@ -98,7 +123,12 @@ def generate_launch_description() -> LaunchDescription:
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
     server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     world = LaunchConfiguration("world")
+    spawn_x = LaunchConfiguration("spawn_x")
+    spawn_y = LaunchConfiguration("spawn_y")
+    spawn_z = LaunchConfiguration("spawn_z")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
+    sim_start_demo_task_node = LaunchConfiguration("sim_start_demo_task_node")
+    sim_start_ui_subscriber = LaunchConfiguration("sim_start_ui_subscriber")
     rviz_config = LaunchConfiguration("rviz_config")
     moveit_start_delay_sec = LaunchConfiguration("moveit_start_delay_sec")
     start_search_demo = LaunchConfiguration("start_search_demo")
@@ -108,6 +138,14 @@ def generate_launch_description() -> LaunchDescription:
 
     moveit_config = (
         MoveItConfigsBuilder("dofbot", package_name="tactile_moveit_config")
+        .robot_description(
+            mappings={
+                "base_world_x": spawn_x,
+                "base_world_y": spawn_y,
+                "base_world_z": spawn_z,
+            }
+        )
+        .robot_description_kinematics()
         .planning_pipelines(default_planning_pipeline="ompl", pipelines=["ompl"])
         .trajectory_execution(moveit_manage_controllers=False)
         .planning_scene_monitor(
@@ -125,11 +163,16 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "world": world,
+            "spawn_x": spawn_x,
+            "spawn_y": spawn_y,
+            "spawn_z": spawn_z,
             "start_gui": start_gazebo_gui,
             "use_sim_time": use_sim_time,
             "use_gpu_accel": use_gpu_accel,
             "server_use_gpu_accel": server_use_gpu_accel,
             "gpu_adapter": gpu_adapter,
+            "start_demo_task_node": sim_start_demo_task_node,
+            "start_ui_subscriber": sim_start_ui_subscriber,
         }.items(),
         condition=IfCondition(start_sim),
     )
@@ -147,7 +190,7 @@ def generate_launch_description() -> LaunchDescription:
                 "moveit_controller_manager": "moveit_simple_controller_manager/MoveItSimpleControllerManager",
                 "trajectory_execution.allowed_execution_duration_scaling": 1.2,
                 "trajectory_execution.allowed_goal_duration_margin": 0.5,
-                "trajectory_execution.allowed_start_tolerance": 0.02,
+                "trajectory_execution.allowed_start_tolerance": 0.05,
                 "publish_robot_description_semantic": True,
                 "publish_planning_scene": True,
                 "publish_geometry_updates": True,
@@ -248,7 +291,12 @@ def generate_launch_description() -> LaunchDescription:
             use_gpu_accel_arg,
             server_use_gpu_accel_arg,
             world_arg,
+            spawn_x_arg,
+            spawn_y_arg,
+            spawn_z_arg,
             gpu_adapter_arg,
+            sim_start_demo_task_node_arg,
+            sim_start_ui_subscriber_arg,
             rviz_config_arg,
             moveit_start_delay_sec_arg,
             start_search_demo_arg,

@@ -1,13 +1,18 @@
 <?xml version="1.0"?>
 <robot name="yahboom_dofbot" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:property name="mesh_root" value="file://$(find tactile_sim)/meshes"/>
+  <xacro:arg name="base_world_x" default="0.0"/>
+  <xacro:arg name="base_world_y" default="0.0"/>
+  <xacro:arg name="base_world_z" default="0.0"/>
 
   <link name="world"/>
 
   <joint name="world_to_base" type="fixed">
     <parent link="world"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 -1.57079632679"/>
+    <origin
+      xyz="$(arg base_world_x) $(arg base_world_y) $(arg base_world_z)"
+      rpy="0 0 -1.57079632679"/>
   </joint>
 
   <link name="base_link">
@@ -665,11 +670,10 @@
         <image>
           <width>640</width>
           <height>480</height>
-          <format>R_FLOAT32</format>
         </image>
         <clip>
-          <near>0.03</near>
-          <far>10.0</far>
+          <near>0.10</near>
+          <far>3.0</far>
         </clip>
       </camera>
     </sensor>
@@ -688,6 +692,8 @@
     <hardware>
       <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>
+    <!-- Controller-space startup pose aligned with the user-space Return Home pose
+         after arm_sim_driver_node applies joint_zero_offsets_deg. -->
     <joint name="arm_joint1">
       <command_interface name="position"/>
       <state_interface name="position">
@@ -698,21 +704,21 @@
     <joint name="arm_joint2">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">-1.256637</param>
+        <param name="initial_value">-1.0821041362</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="arm_joint3">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">1.553343</param>
+        <param name="initial_value">1.7802358370</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="arm_joint4">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">1.553343</param>
+        <param name="initial_value">1.4311699866</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
@@ -726,7 +732,7 @@
     <joint name="grip_joint">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">0.0</param>
+        <param name="initial_value">-1.2</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>

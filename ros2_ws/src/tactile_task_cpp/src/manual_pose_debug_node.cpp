@@ -14,6 +14,7 @@
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit/robot_state/robot_state.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include <visualization_msgs/msg/interactive_marker.hpp>
 #include <visualization_msgs/msg/interactive_marker_control.hpp>
 #include <visualization_msgs/msg/interactive_marker_feedback.hpp>
@@ -48,6 +49,7 @@ private:
     this->declare_parameter<bool>("plan_on_startup", false);
     this->declare_parameter<bool>("initialize_target_from_named_target_pose", true);
     this->declare_parameter<bool>("initialize_target_from_current_ee_pose", true);
+    this->declare_parameter<bool>("position_only_target", false);
     this->declare_parameter<double>("startup_delay_sec", 1.0);
     this->declare_parameter<double>("planning_time_sec", 5.0);
     this->declare_parameter<int>("planning_attempts", 10);
@@ -59,8 +61,10 @@ private:
     this->declare_parameter<std::string>("interactive_marker_namespace", "manual_pose_debug");
     this->declare_parameter<std::vector<double>>("target_position_xyz", {0.18, 0.0, 0.24});
     this->declare_parameter<std::vector<double>>("target_rpy_deg", {0.0, 90.0, 0.0});
+    this->declare_parameter<std::vector<double>>("current_pose_offset_xyz", {0.0, 0.0, 0.0});
     this->declare_parameter<std::string>("target_pose_topic", "/debug/manual_pose/target_pose");
     this->declare_parameter<std::string>("current_ee_pose_topic", "/debug/manual_pose/current_ee_pose");
+    this->declare_parameter<std::string>("joint_states_topic", "/joint_states");
 
     base_frame_ = this->get_parameter("base_frame").as_string();
     arm_group_name_ = this->get_parameter("arm_group").as_string();
@@ -74,6 +78,7 @@ private:
       this->get_parameter("initialize_target_from_named_target_pose").as_bool();
     initialize_target_from_current_ee_pose_ =
       this->get_parameter("initialize_target_from_current_ee_pose").as_bool();
+    position_only_target_ = this->get_parameter("position_only_target").as_bool();
     startup_delay_sec_ = this->get_parameter("startup_delay_sec").as_double();
     planning_time_sec_ = this->get_parameter("planning_time_sec").as_double();
     planning_attempts_ = this->get_parameter("planning_attempts").as_int();
@@ -87,14 +92,24 @@ private:
       this->get_parameter("interactive_marker_namespace").as_string();
     target_position_xyz_ = this->get_parameter("target_position_xyz").as_double_array();
     target_rpy_deg_ = this->get_parameter("target_rpy_deg").as_double_array();
+    current_pose_offset_xyz_ = this->get_parameter("current_pose_offset_xyz").as_double_array();
 
     const auto target_pose_topic = this->get_parameter("target_pose_topic").as_string();
     const auto current_ee_pose_topic = this->get_parameter("current_ee_pose_topic").as_string();
+    const auto joint_states_topic = this->get_parameter("joint_states_topic").as_string();
     auto latched_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
     target_pose_pub_ =
       this->create_publisher<geometry_msgs::msg::PoseStamped>(target_pose_topic, latched_qos);
     current_ee_pose_pub_ =
       this->create_publisher<geometry_msgs::msg::PoseStamped>(current_ee_pose_topic, latched_qos);
+    joint_state_sub_ = this->create_subscription<sensor_msgs::msg::JointState>(
+      joint_states_topic,
+      rclcpp::QoS(rclcpp::KeepLast(50)).reliable(),
+      [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
+        std::scoped_lock<std::mutex> lock(joint_state_mutex_);
+        latest_joint_state_ = *msg;
+        has_latest_joint_state_ = true;
+      });
 
     target_pose_msg_ = build_target_pose();
 
@@ -288,15 +303,19 @@ private:
   {
     auto current_state = arm_group_->getCurrentState(0.1);
     if (!current_state) {
+      current_state = build_fallback_current_state();
+    }
+    if (!current_state) {
       if (verbose) {
         RCLCPP_WARN(this->get_logger(), "manual pose debug: failed to fetch current robot state");
       }
       return false;
     }
 
-    auto pose = arm_group_->getCurrentPose(ee_link_);
+    geometry_msgs::msg::PoseStamped pose;
     pose.header.frame_id = base_frame_;
     pose.header.stamp = this->get_clock()->now();
+    pose.pose = pose_from_eigen_transform(current_state->getGlobalLinkTransform(ee_link_));
     current_ee_pose_pub_->publish(pose);
     if (verbose) {
       RCLCPP_INFO(
@@ -411,16 +430,23 @@ private:
   {
     auto current_state = arm_group_->getCurrentState(1.0);
     if (!current_state) {
+      current_state = build_fallback_current_state();
+    }
+    if (!current_state) {
       RCLCPP_WARN(
         this->get_logger(),
         "manual pose debug: failed to fetch current state for initial target pose");
       return false;
     }
 
-    auto current_pose = arm_group_->getCurrentPose(ee_link_);
     target_pose_msg_.header.frame_id = base_frame_;
     target_pose_msg_.header.stamp = this->get_clock()->now();
-    target_pose_msg_.pose = current_pose.pose;
+    target_pose_msg_.pose = pose_from_eigen_transform(current_state->getGlobalLinkTransform(ee_link_));
+    if (current_pose_offset_xyz_.size() >= 3) {
+      target_pose_msg_.pose.position.x += current_pose_offset_xyz_[0];
+      target_pose_msg_.pose.position.y += current_pose_offset_xyz_[1];
+      target_pose_msg_.pose.position.z += current_pose_offset_xyz_[2];
+    }
     update_marker_pose();
     publish_target_pose();
     publish_current_ee_pose(false);
@@ -443,8 +469,24 @@ private:
       reason.c_str(),
       pose_summary(target_pose_msg_.pose).c_str());
 
-    arm_group_->setStartStateToCurrentState();
-    arm_group_->setPoseTarget(target_pose_msg_.pose, ee_link_);
+    auto current_state = arm_group_->getCurrentState(0.5);
+    if (!current_state) {
+      current_state = build_fallback_current_state();
+    }
+    if (current_state) {
+      arm_group_->setStartState(*current_state);
+    } else {
+      arm_group_->setStartStateToCurrentState();
+    }
+    if (position_only_target_) {
+      arm_group_->setPositionTarget(
+        target_pose_msg_.pose.position.x,
+        target_pose_msg_.pose.position.y,
+        target_pose_msg_.pose.position.z,
+        ee_link_);
+    } else {
+      arm_group_->setPoseTarget(target_pose_msg_.pose, ee_link_);
+    }
     moveit::planning_interface::MoveGroupInterface::Plan plan;
     const bool planned = static_cast<bool>(arm_group_->plan(plan));
     arm_group_->clearPoseTargets();
@@ -518,6 +560,7 @@ private:
   bool plan_on_startup_{false};
   bool initialize_target_from_named_target_pose_{true};
   bool initialize_target_from_current_ee_pose_{true};
+  bool position_only_target_{false};
   double startup_delay_sec_{1.0};
   double planning_time_sec_{5.0};
   int planning_attempts_{10};
@@ -529,13 +572,48 @@ private:
   std::string interactive_marker_namespace_;
   std::vector<double> target_position_xyz_;
   std::vector<double> target_rpy_deg_;
+  std::vector<double> current_pose_offset_xyz_;
 
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_group_;
   std::shared_ptr<interactive_markers::InteractiveMarkerServer> marker_server_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr current_ee_pose_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
   geometry_msgs::msg::PoseStamped target_pose_msg_;
+  std::mutex joint_state_mutex_;
+  sensor_msgs::msg::JointState latest_joint_state_;
+  bool has_latest_joint_state_{false};
+
+  moveit::core::RobotStatePtr build_fallback_current_state()
+  {
+    std::scoped_lock<std::mutex> lock(joint_state_mutex_);
+    if (!has_latest_joint_state_) {
+      return nullptr;
+    }
+    auto robot_model = arm_group_->getRobotModel();
+    if (!robot_model) {
+      return nullptr;
+    }
+
+    auto state = std::make_shared<moveit::core::RobotState>(robot_model);
+    state->setToDefaultValues();
+    const auto & variable_names = state->getVariableNames();
+    const std::size_t count = std::min(latest_joint_state_.name.size(), latest_joint_state_.position.size());
+    for (std::size_t index = 0; index < count; ++index) {
+      if (
+        std::find(
+          variable_names.begin(),
+          variable_names.end(),
+          latest_joint_state_.name[index]) == variable_names.end())
+      {
+        continue;
+      }
+      state->setVariablePosition(latest_joint_state_.name[index], latest_joint_state_.position[index]);
+    }
+    state->update();
+    return state;
+  }
 };
 
 int main(int argc, char ** argv)
