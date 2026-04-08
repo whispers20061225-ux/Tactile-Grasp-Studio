@@ -1,235 +1,38 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1 + Phase 6.2 base)
+# ROS2 Workspace Quickstart
 
-This workspace now includes:
+这个 `ros2_ws/` 是当前 Tactile Grasp Studio Web 主链真正运行的 ROS 2 工作区。
 
-- phase 1: minimal fake tactile chain for GUI read-only validation
-- phase 2: hardware-layer ROS2 nodes for tactile sensor and arm
-- phase 3: control-layer ROS2 node with safety gate and action/service APIs
-- phase 4: GUI command bridge to ROS2 control-layer services
-- phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
-- phase 6.1: vision ROS2 kickoff (`realsense_monitor_node` + `phase6_vision.launch.py`)
-- phase 6.2(base): simulation baseline chain (`tactile_sim` + `phase6_sim_base.launch.py`)
-- phase 6.3(shadow): local Qwen2.5-VL target selection shadow node (`/qwen/vision_result`)
+如果你是在新机器上第一次搭环境，先看：
 
-## Workspace layout
+- [ROS 2 环境与依赖安装指南](../docs/ros2_environment_setup_guide.md)
+- [仓库根 README](../README.md)
 
-```text
-ros2_ws/
-  src/
-    tactile_interfaces/
-    tactile_hardware/
-    tactile_control/
-    tactile_task/
-    tactile_bringup/
-    tactile_ui_bridge/
-    tactile_vision/
-    tactile_sim/
-```
+## 1. 先分清两套环境
 
-## Build (Ubuntu + ROS2 Jazzy)
+- `/opt/ros/jazzy` + 当前 `ros2_ws/`：现在真正跑 Web 抓取主链的运行环境
+- `../environment.yml`：保留的 Conda 环境，用于旧 Python 工具链、旧桌面端和一些辅助脚本
+- [`requirements-ros2.txt`](requirements-ros2.txt)：当前 ROS 2 shell 里还要补装的非 ROS Python 包
 
-```bash
-cd ros2_ws
-colcon build
-source install/setup.bash
-```
+当前主链不要直接依赖 Windows 侧 Python，也不要把根目录 Conda 环境当作唯一运行环境。
 
-## Run phase 1
+## 2. 安装当前工作区依赖
 
-```bash
-ros2 launch tactile_bringup phase1_fake_chain.launch.py
+先确保 ROS 2 Jazzy 已经装好并且能 `source /opt/ros/jazzy/setup.bash`。
 
-# in another terminal at repository root
-python main_ros2.py --tactile-topic /tactile/raw --health-topic /system/health
-```
-
-Expected topics:
-
-- `/tactile/raw`
-- `/system/health`
-
-## Run phase 2
-
-```bash
-ros2 launch tactile_bringup phase2_hardware.launch.py
-```
-
-Default phase 2 behavior:
-
-- tactile sensor node publishes `/tactile/raw` (simulation fallback enabled)
-- arm driver node publishes `/arm/state` and controls joint ids `1..6` (manual enable by service)
-- health is reported on `/system/health`
-
-Useful service calls:
-
-```bash
-ros2 service call /arm/enable std_srvs/srv/SetBool "{data: true}"
-ros2 service call /arm/home std_srvs/srv/Trigger "{}"
-ros2 service call /arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 30.0, duration_ms: 1200, wait: true}"
-ros2 service call /arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [20.0, 35.0, 15.0], duration_ms: 1500, wait: true}"
-```
-
-## Run phase 3
-
-```bash
-ros2 launch tactile_bringup phase3_control.launch.py
-```
-
-Phase 3 adds `arm_control_node` between UI/task side and hardware services:
-
-- control services:
-  - `/control/arm/enable`
-  - `/control/arm/home`
-  - `/control/arm/move_joint`
-  - `/control/arm/move_joints`
-- control action:
-  - `/control/arm/move_joints_action`
-- emergency reset:
-  - `/system/reset_emergency`
-
-Useful control-layer calls:
-
-```bash
-ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
-ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 1000, wait: true}"
-ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}"
-ros2 action send_goal /control/arm/move_joints_action tactile_interfaces/action/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}" --feedback
-ros2 service call /system/reset_emergency std_srvs/srv/Trigger "{}"
-```
-
-## Run phase 4 (GUI bridge)
-
-Phase 4 keeps launch topology from phase 3 and upgrades `main_ros2.py`
-from monitor mode to ROS2 control mode.
-
-Terminal A:
-
-```bash
-ros2 launch tactile_bringup phase3_control.launch.py
-```
-
-Terminal B (repository root):
-
-```bash
-python main_ros2.py --control-mode ros2
-```
-
-Fallback mode:
-
-```bash
-python main_ros2.py --control-mode stub
-```
-
-## Run phase 5 (task orchestration + GUI)
-
-Terminal A:
-
-```bash
-ros2 launch tactile_bringup phase5_task.launch.py
-```
-
-Hardware profile example:
-
-```bash
-ros2 launch tactile_bringup phase5_task.launch.py \
-  param_file:=/home/zhuyiwei/programme/programme/ros2_ws/src/tactile_bringup/config/phase5_task_hardware.yaml
-```
-
-Terminal B (repository root):
-
-```bash
-python main_ros2.py --control-mode ros2 --log-level INFO
-```
-
-Terminal C (task/API quick check):
-
-```bash
-ros2 action list | grep /task/execute_demo
-ros2 service list | grep /task/
-ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
-ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "{demo_name: 'vector_visualization', params_json: '{\"duration\": 8}', duration_sec: 8.0}" --feedback
-```
-
-## Run phase 6.1 (vision kickoff)
-
-Important:
-
-- D455 image data comes through USB camera topics, not serial.
-- Keep serial ports for STM32 only.
-
-Terminal A:
-
-```bash
-ros2 launch tactile_bringup phase6_vision.launch.py
-```
-
-If your camera driver is already started elsewhere:
-
-```bash
-ros2 launch tactile_bringup phase6_vision.launch.py start_realsense:=false
-```
-
-Terminal B:
-
-```bash
-ros2 node list | grep -E "realsense2_camera|realsense_monitor_node"
-ros2 topic hz /camera/camera/color/image_raw
-ros2 topic echo /system/health --once
-```
-
-## Run phase 6.3 (Qwen shadow mode)
-
-Start a local OpenAI-compatible Qwen2.5-VL endpoint first, then run:
-
-```bash
-ros2 launch tactile_bringup phase6_qwen_shadow.launch.py
-```
-
-The node subscribes to the relay color topic by default and publishes normalized
-JSON strings to:
-
-- `/qwen/vision_result`
-
-Optional operator prompt updates can be sent through:
-
-```bash
-ros2 topic pub --once /qwen/user_prompt std_msgs/msg/String "{data: 'Pick the nearest blue cylinder'}"
-```
-
-## Run phase 6.2 (simulation baseline kickoff)
-
-Terminal A:
-
-```bash
-ros2 launch tactile_bringup phase6_sim_base.launch.py
-```
-
-Terminal B:
-
-```bash
-python main_ros2.py --control-mode ros2 --log-level INFO
-```
-
-Quick checks:
-
-```bash
-ros2 topic list | grep -E "/tactile/raw|/arm/state|/system/health"
-ros2 service list | grep -E "/arm/|/control/arm/"
-ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
-ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 800, wait: true}"
-```
-
-## Run phase 6.2 (Gazebo Sim + ros2_control kickoff)
-
-The Gazebo kickoff path now loads the DOF Bot robot model from
-`tactile_sim/urdf/dofbot_gazebo.urdf.xacro` and installs the matching
-`tactile_sim/meshes/*.STL` assets into the ROS package.
-
-Install runtime dependencies once (Ubuntu 24.04 + ROS2 Jazzy):
+安装系统依赖：
 
 ```bash
 sudo apt update
 sudo apt install -y \
+  python3-pip \
+  python3-colcon-common-extensions \
+  python3-rosdep \
+  python3-vcstool \
+  python3-fastapi \
+  python3-uvicorn \
+  python3-websockets \
+  python3-requests \
+  ros-jazzy-moveit \
   ros-jazzy-ros-gz-sim \
   ros-jazzy-ros-gz \
   ros-jazzy-ros-gz-bridge \
@@ -238,57 +41,123 @@ sudo apt install -y \
   ros-jazzy-ros2-controllers \
   ros-jazzy-joint-state-broadcaster \
   ros-jazzy-joint-trajectory-controller \
-  ros-jazzy-xacro
+  ros-jazzy-rmw-cyclonedds-cpp \
+  ros-jazzy-xacro \
+  npm
 ```
 
-One-click VM startup:
+如果你要走真实相机链路，再装：
 
 ```bash
-bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
+sudo apt install -y ros-jazzy-realsense2-camera
 ```
 
-Override the DOF Bot spawn pose from the guard script if needed:
+安装当前主链会 import 的非 ROS Python 包：
 
 ```bash
-GAZEBO_SPAWN_X=0.24 GAZEBO_SPAWN_Y=0.0 GAZEBO_SPAWN_Z=0.405 \
-bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 true true
+python3 -m pip install --user --break-system-packages \
+  -r /home/whispers/programme/ros2_ws/requirements-ros2.txt
 ```
 
-Terminal A:
+## 3. 构建工作区
+
+第一次在这台机器上使用 rosdep 时：
 
 ```bash
-ros2 launch tactile_bringup phase6_sim_gazebo.launch.py
+sudo rosdep init
+rosdep update
 ```
 
-Optional GUI mode:
+然后构建：
 
 ```bash
-ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true
+source /opt/ros/jazzy/setup.bash
+cd /home/whispers/programme/ros2_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+source install/setup.bash
 ```
 
-Adjust the DOF Bot spawn pose if needed:
+## 4. 构建 Web 前端
+
+`tactile_web_gateway` 会直接托管 `frontend/dist`，所以第一次跑主链前先打包：
 
 ```bash
-ros2 launch tactile_bringup phase6_sim_gazebo.launch.py start_gui:=true spawn_x:=0.24 spawn_y:=0.0 spawn_z:=0.405
+cd /home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend
+npm install
+npm run build
 ```
 
-Disable clock bridge (debug only):
+如果你是在改前端，也可以跑开发服务器：
 
 ```bash
-ros2 launch tactile_bringup phase6_sim_gazebo.launch.py bridge_clock:=false
+cd /home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend
+npm run dev
 ```
 
-Terminal B:
+## 5. 配置对话 / 语义模型
 
-```bash
-python main_ros2.py --control-mode ros2 --vision-enabled false --show-vision-ui false --log-level INFO
+当前主链默认读取：
+
+```text
+~/.config/programme/remote_vlm.env
 ```
 
-Quick checks:
+最小示例：
 
 ```bash
-ros2 topic list | grep -E "/joint_states|/arm/state|/tactile/raw|/system/health"
-ros2 action list | grep /joint_trajectory_controller/follow_joint_trajectory
-ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
-ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [10.0, 20.0, 15.0], duration_ms: 1200, wait: true}"
+mkdir -p ~/.config/programme
+cat > ~/.config/programme/remote_vlm.env <<'EOF'
+PROGRAMME_DIALOG_MODEL_ENDPOINT=http://127.0.0.1:8000/v1/chat/completions
+PROGRAMME_DIALOG_MODEL_NAME=Qwen/Qwen2.5-VL-3B-Instruct-AWQ
+PROGRAMME_DIALOG_API_KEY=EMPTY
+EOF
+```
+
+## 6. 启动当前主链
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd /home/whispers/programme/ros2_ws
+source install/setup.bash
+ros2 launch tactile_bringup tactile_grasp_studio.launch.py
+```
+
+默认 Web 入口：
+
+```text
+http://127.0.0.1:8765
+```
+
+## 7. 当前主链关键节点
+
+- `qwen_semantic_node`
+- `detector_seg_node`
+- `cloud_filter_node`
+- `primitive_fit_node`
+- `grasp_input_cloud_node`
+- `grasp_backend_node`
+- `task_executive_node`
+- `search_target_skill_node`
+- `sim_pick_task_node`
+- `tactile_web_gateway`
+
+## 8. 快速自检
+
+检查节点：
+
+```bash
+ros2 node list | grep -E "tactile_web_gateway|qwen_semantic_node|detector_seg_node|cloud_filter_node|primitive_fit_node|grasp_backend_node|task_executive_node|sim_pick_task_node"
+```
+
+检查网关：
+
+```bash
+curl http://127.0.0.1:8765/api/bootstrap
+```
+
+检查前端产物：
+
+```bash
+test -f /home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend/dist/index.html
 ```

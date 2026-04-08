@@ -12,6 +12,7 @@ click==8.3.1
 ConfigArgParse==1.7.1
 dash==3.3.0
 empy==3.3.4
+fastapi==0.135.1
 fastjsonschema==2.21.2
 filelock==3.20.0
 Flask==3.1.2
@@ -35,6 +36,8 @@ narwhals==2.14.0
 nbformat==5.10.4
 nest-asyncio==1.6.0
 networkx==3.6
+onnx==1.20.1
+onnxruntime==1.24.4
 packaging==25.0
 platformdirs==4.5.1
 plotly==6.5.0
@@ -66,7 +69,9 @@ tzdata==2025.3
 ultralytics==8.3.241
 ultralytics-thop==2.0.18
 urllib3==2.6.2
+uvicorn==0.42.0
 wandb==0.23.1
+websockets==16.0
 Werkzeug==3.1.4
 xarm==0.0.4
 zipp==3.23.0
