@@ -4,6 +4,10 @@
 
 - [仓库 README](../README.md)
   - 当前 Tactile Grasp Studio Web 主链的环境准备、前置依赖、全链路启动与自检
+- [ROS 2 环境与依赖安装指南](ros2_environment_setup_guide.md)
+  - 从零安装 ROS 2 Jazzy、初始化 rosdep、补齐当前项目的 apt 和 pip 依赖
+- [ROS2 工作区 Quickstart](../ros2_ws/README.md)
+  - 面向当前 `ros2_ws` 的最短命令路径：装依赖、构建、前端打包、启动主链
 - [术语与缩写表](terminology_guide.md)
   - 先把 ROI、VLM、bbox、pregrasp、GraspGen 这些高频缩写讲清楚
 - [系统总览说明书](system_overview_manual.md)

@@ -1,0 +1,12 @@
+# Non-ROS Python dependencies for the current ROS 2 Jazzy Web stack.
+# Install into the same Python interpreter used by the ROS 2 shell:
+#   python3 -m pip install --user --break-system-packages -r requirements-ros2.txt
+
+requests
+fastapi
+uvicorn
+websockets
+ultralytics
+onnx
+onnxruntime
+open3d

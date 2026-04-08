@@ -1,3 +1,9 @@
+# Legacy / auxiliary Conda environment kept on purpose.
+# Use this for the older Python-only toolchain, notebooks, dataset scripts,
+# and optional standalone debugging utilities.
+# The current Web grasp pipeline should run from the WSL2 ROS 2 Jazzy shell.
+# Update command:
+#   conda env update -f environment.yml --prune
 name: dayiprogramme312
 channels:
   - conda-forge
