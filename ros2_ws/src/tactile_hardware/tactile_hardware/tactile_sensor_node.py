@@ -190,6 +190,9 @@ class TactileSensorNode(Node):
         msg.forces_fx = fx
         msg.forces_fy = fy
         msg.forces_fz = fz
+        msg.torques_tx = [0.0] * len(forces)
+        msg.torques_ty = [0.0] * len(forces)
+        msg.torques_tz = [0.0] * len(forces)
 
         self._sequence_id += 1
         return msg
@@ -209,6 +212,9 @@ class TactileSensorNode(Node):
         msg.forces_fx = fx
         msg.forces_fy = fy
         msg.forces_fz = fz
+        msg.torques_tx = [0.0] * len(forces)
+        msg.torques_ty = [0.0] * len(forces)
+        msg.torques_tz = [0.0] * len(forces)
 
         self._sequence_id += 1
         self._phase += 0.08
