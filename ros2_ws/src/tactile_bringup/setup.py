@@ -14,8 +14,10 @@ setup(
             f"share/{package_name}/launch",
             [
                 "launch/tactile_grasp_studio.launch.py",
+                "launch/programme_mainline.launch.py",
                 "launch/programme_system.launch.py",
                 "launch/programme_grasp_stack.launch.py",
+                "launch/real_tactile_mainline.launch.py",
                 "launch/tactile_hardware_only.launch.py",
                 "launch/vision_pipeline.launch.py",
                 "launch/web_console_stack.launch.py",

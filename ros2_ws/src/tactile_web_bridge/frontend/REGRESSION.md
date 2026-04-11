@@ -15,7 +15,7 @@ npm run test:e2e
 ## Real Stack Manual Regression
 
 1. Build the frontend and the `tactile_web_bridge` package.
-2. Launch `web_console_stack.launch.py`.
+2. Launch `web_console_stack.launch.py` for the lightweight Web stack, or `programme_system.launch.py` for the full integrated stack.
 3. Open the Web UI and verify:
    - `/api/bootstrap` returns `200` and `frontend_ready=true`
    - WebSocket reconnect overlay appears on gateway loss and disappears on recovery
@@ -24,6 +24,8 @@ npm run test:e2e
    - Vision hover highlights the candidate box and click stages the label override
    - `target_locked=true` stops at `waiting_execute` until `Execute` is clicked
    - `Re-plan` clears local draft state but preserves chat history
-   - fake tactile publishing updates the heatmap and sparkline charts
+   - hardware tactile updates the heatmap and sparkline charts
+   - `Tare` and `Clear Tare` return `200` and change the baseline as expected
+   - the raw-frame static warning appears only when a non-zero hardware frame stops changing and clears after motion resumes
    - log export contains intervention metadata
    - `E-Stop` opens the placeholder modal and performs no control action

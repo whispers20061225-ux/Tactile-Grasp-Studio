@@ -19,7 +19,7 @@ echo "[runner] component=$COMPONENT started at $(date --iso-8601=seconds)"
 
 case "$COMPONENT" in
   ros)
-    echo "[runner] backend ROS stack is owned by compatibility unit programme-phase8-full.service; use systemctl --user restart programme-phase8-full.service" >&2
+    echo "[runner] backend ROS stack is owned by programme-system.service; use systemctl --user restart programme-system.service" >&2
     exit 2
     ;;
   frontend)

@@ -7,6 +7,7 @@ $ErrorActionPreference = "SilentlyContinue"
 $runtimeDir = Join-Path $env:LOCALAPPDATA "ProgrammeWebUI"
 $watchdogPidFile = Join-Path $runtimeDir "watchdog.win.pid"
 $debugHelperPidFile = Join-Path $runtimeDir "debug-helper.win.pid"
+$bridgeStopScript = Join-Path $PSScriptRoot "stop_stm32_tcp_bridge.ps1"
 
 if (Test-Path $watchdogPidFile) {
     $rawPid = (Get-Content -Path $watchdogPidFile | Select-Object -First 1).Trim()
@@ -44,6 +45,10 @@ Get-CimInstance Win32_Process |
     ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
+
+if (Test-Path $bridgeStopScript) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bridgeStopScript | Out-Null
+}
 
 & wsl.exe -d $Distro -- /home/whispers/programme/ros2_ws/scripts/stop_tactile_grasp_studio.sh
 exit $LASTEXITCODE

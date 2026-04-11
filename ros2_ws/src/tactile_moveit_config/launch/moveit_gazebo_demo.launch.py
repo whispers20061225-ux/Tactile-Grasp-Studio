@@ -83,6 +83,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Start the legacy phase6 tactile_ui_subscriber inside the Gazebo sim chain",
     )
+    sim_start_tactile_sim_node_arg = DeclareLaunchArgument(
+        "sim_start_tactile_sim_node",
+        default_value="true",
+        description="Start the tactile_sim_node publisher inside the Gazebo sim chain",
+    )
     rviz_config_arg = DeclareLaunchArgument(
         "rviz_config",
         default_value=PathJoinSubstitution(
@@ -129,6 +134,7 @@ def generate_launch_description() -> LaunchDescription:
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     sim_start_demo_task_node = LaunchConfiguration("sim_start_demo_task_node")
     sim_start_ui_subscriber = LaunchConfiguration("sim_start_ui_subscriber")
+    sim_start_tactile_sim_node = LaunchConfiguration("sim_start_tactile_sim_node")
     rviz_config = LaunchConfiguration("rviz_config")
     moveit_start_delay_sec = LaunchConfiguration("moveit_start_delay_sec")
     start_search_demo = LaunchConfiguration("start_search_demo")
@@ -173,6 +179,7 @@ def generate_launch_description() -> LaunchDescription:
             "gpu_adapter": gpu_adapter,
             "start_demo_task_node": sim_start_demo_task_node,
             "start_ui_subscriber": sim_start_ui_subscriber,
+            "start_tactile_sim_node": sim_start_tactile_sim_node,
         }.items(),
         condition=IfCondition(start_sim),
     )
@@ -297,6 +304,7 @@ def generate_launch_description() -> LaunchDescription:
             gpu_adapter_arg,
             sim_start_demo_task_node_arg,
             sim_start_ui_subscriber_arg,
+            sim_start_tactile_sim_node_arg,
             rviz_config_arg,
             moveit_start_delay_sec_arg,
             start_search_demo_arg,

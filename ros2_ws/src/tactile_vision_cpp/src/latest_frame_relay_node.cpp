@@ -15,11 +15,11 @@ class LatestFrameRelayNode : public rclcpp::Node {
 public:
   LatestFrameRelayNode() : Node("latest_frame_relay_node") {
     input_color_topic_ = declare_parameter<std::string>(
-      "input_color_topic", "/camera/camera/color/image_raw");
+      "input_color_topic", "/camera/realsense2_camera/color/image_raw");
     input_depth_topic_ = declare_parameter<std::string>(
-      "input_depth_topic", "/camera/camera/aligned_depth_to_color/image_raw");
+      "input_depth_topic", "/camera/realsense2_camera/aligned_depth_to_color/image_raw");
     input_camera_info_topic_ = declare_parameter<std::string>(
-      "input_camera_info_topic", "/camera/camera/color/camera_info");
+      "input_camera_info_topic", "/camera/realsense2_camera/color/camera_info");
     output_color_topic_ = declare_parameter<std::string>(
       "output_color_topic", "/camera/relay/color/image_raw");
     output_depth_topic_ = declare_parameter<std::string>(

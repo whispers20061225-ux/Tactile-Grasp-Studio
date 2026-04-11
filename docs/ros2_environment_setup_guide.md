@@ -10,7 +10,7 @@
 - WSL2
 - Ubuntu 24.04
 - ROS 2 Jazzy
-- 当前主链入口：`ros2_ws/src/tactile_bringup/launch/tactile_grasp_studio.launch.py`
+- 当前主链入口：`ros2_ws/src/tactile_bringup/launch/programme_system.launch.py`
 
 ROS 2 Jazzy 的基础安装步骤参考官方文档：
 
@@ -205,8 +205,10 @@ EOF
 source /opt/ros/jazzy/setup.bash
 cd /home/whispers/programme/ros2_ws
 source install/setup.bash
-ros2 launch tactile_bringup tactile_grasp_studio.launch.py
+ros2 launch tactile_bringup programme_system.launch.py
 ```
+
+兼容旧命令时，也可以继续使用 `tactile_grasp_studio.launch.py` 或 `programme_mainline.launch.py`，它们都会转发到 `programme_system.launch.py`。
 
 默认 Web 地址：
 

@@ -198,6 +198,7 @@ export interface UiState {
     state_version: number;
     host: string;
     port: number;
+    system_mode?: string;
   };
   semantic: SemanticState;
   vision: {
@@ -206,6 +207,10 @@ export interface UiState {
     debug_candidates: CandidateDebug[];
     selected_candidate?: CandidateDebug | null;
     candidate_summary?: string;
+    source_name?: string;
+    source_node?: string;
+    source_connected?: boolean;
+    status_text?: string;
     image_width: number;
     image_height: number;
     updated_at: number;

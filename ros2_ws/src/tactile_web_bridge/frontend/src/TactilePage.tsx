@@ -13,9 +13,7 @@ import type { UiState } from "./types";
 
 export function TactilePage(props: {
   state: UiState;
-  modeBusy: boolean;
   tareBusy: boolean;
-  onSetMode: (useHardware: boolean) => void;
   onTare: () => void;
   onClearTare: () => void;
 }) {
@@ -48,13 +46,12 @@ export function TactilePage(props: {
   );
   const requestedMode = (tactile.requested_mode || "simulation").toLowerCase();
   const activeMode = (tactile.active_mode || tactile.requested_mode || "simulation").toLowerCase();
+  const systemMode = (props.state.connection.system_mode || "execution").toLowerCase();
   const sourceName = tactile.source_name || "--";
   const rawFrameHex = tactile.raw_frame_hex || "";
   const statusText = tactile.status_text || "waiting for tactile data";
   const hardwareRequested = requestedMode === "hardware";
   const hardwareActive = activeMode === "hardware";
-  const realButtonClass = hardwareRequested ? "primary-button" : "ghost-button";
-  const virtualButtonClass = hardwareRequested ? "ghost-button" : "primary-button";
   const contactActive = Boolean(tactile.contact_active);
   const baselineReady = Boolean(tactile.baseline_ready);
   const tareActive = Boolean(tactile.tare_active);
@@ -68,49 +65,32 @@ export function TactilePage(props: {
       <div className="stack-column">
         <Panel
           title="Source & Diagnostics"
-          subtitle="Mode selection only switches the tactile source. Frame parsing, baseline handling, and filtering stay below the web layer."
+          subtitle="The tactile page now reflects the launch-selected system mode. Source switching stays out of the browser so the backend does not churn nodes at runtime."
           actions={(
-            <div className="stack-column">
-              <div className="button-row">
-                <button
-                  className={realButtonClass}
-                  disabled={props.modeBusy || (hardwareRequested && hardwareActive)}
-                  onClick={() => props.onSetMode(true)}
-                  type="button"
-                >
-                  Real
-                </button>
-                <button
-                  className={virtualButtonClass}
-                  disabled={props.modeBusy || (!hardwareRequested && !hardwareActive)}
-                  onClick={() => props.onSetMode(false)}
-                  type="button"
-                >
-                  Virtual
-                </button>
-              </div>
-              <div className="button-row compact">
-                <button
-                  className="ghost-button"
-                  disabled={props.tareBusy || !hardwareActive || !tactile.source_connected}
-                  onClick={props.onTare}
-                  type="button"
-                >
-                  Tare
-                </button>
-                <button
-                  className="ghost-button"
-                  disabled={props.tareBusy || !tareActive}
-                  onClick={props.onClearTare}
-                  type="button"
-                >
-                  Clear Tare
-                </button>
-              </div>
+            <div className="button-row compact">
+              <button
+                className="ghost-button"
+                disabled={props.tareBusy || !hardwareActive || !tactile.source_connected}
+                onClick={props.onTare}
+                type="button"
+              >
+                Tare
+              </button>
+              <button
+                className="ghost-button"
+                disabled={props.tareBusy || !tareActive}
+                onClick={props.onClearTare}
+                type="button"
+              >
+                Clear Tare
+              </button>
             </div>
           )}
         >
           <div className="status-row">
+            <StatusPill tone={systemMode === "execution" ? "info" : "neutral"}>
+              System {systemMode}
+            </StatusPill>
             <StatusPill tone={hardwareRequested ? "info" : "neutral"}>
               Requested {tactile.requested_mode || "simulation"}
             </StatusPill>

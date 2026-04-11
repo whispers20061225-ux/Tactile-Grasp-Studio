@@ -1,7 +1,8 @@
 tactile_web_gateway:
   ros__parameters:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8765
+    system_mode: "execution"
     frontend_dist_dir: "/home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend/dist"
     live_state_period_sec: 0.15
     tactile_topic: "/tactile/raw"
@@ -14,7 +15,7 @@ tactile_web_gateway:
     prompt_topic: "/qwen/user_prompt"
     semantic_task_topic: "/qwen/semantic_task"
     semantic_result_topic: "/qwen/semantic_result"
-    color_topic: "/camera/camera/color/image_raw"
+    color_topic: "/camera/relay/color/image_raw"
     detection_result_topic: "/perception/detection_result"
     detection_debug_topic: "/perception/detection_debug"
     detection_debug_overlay_topic: "/perception/detection_debug_overlay"

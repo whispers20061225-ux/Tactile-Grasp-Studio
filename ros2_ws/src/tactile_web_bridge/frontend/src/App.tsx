@@ -11,7 +11,6 @@ import {
   postClearTactileTare,
   postResetScene,
   postReplan,
-  postTactileMode,
   postTactileTare,
   postReturnHome,
 } from "./api";
@@ -326,31 +325,6 @@ function App() {
     }
   }, [pushFrontendEvent, pushToast, setState]);
 
-  const handleSetTactileMode = useCallback(async (useHardware: boolean) => {
-    setBusyAction("tactile-mode");
-    try {
-      setState(await postTactileMode(useHardware));
-      pushToast(
-        "info",
-        "Tactile",
-        useHardware ? "Real tactile link requested." : "Virtual tactile link requested.",
-      );
-      pushFrontendEvent(
-        "tactile",
-        "info",
-        `tactile mode requested: ${useHardware ? "hardware" : "simulation"}`,
-      );
-    } catch (error) {
-      pushToast("error", "Tactile", getErrorMessage(error, "Failed to switch tactile mode."));
-      pushFrontendEvent("tactile", "error", "tactile mode switch failed", {
-        mode: useHardware ? "hardware" : "simulation",
-        message: getErrorMessage(error, "tactile mode switch failed"),
-      });
-    } finally {
-      setBusyAction(null);
-    }
-  }, [pushFrontendEvent, pushToast, setState]);
-
   const handleTactileTare = useCallback(async () => {
     setBusyAction("tactile-tare");
     try {
@@ -448,9 +422,7 @@ function App() {
             element={
               <TactilePage
                 state={state}
-                modeBusy={busyAction === "tactile-mode"}
                 tareBusy={busyAction === "tactile-tare" || busyAction === "tactile-clear-tare"}
-                onSetMode={handleSetTactileMode}
                 onTare={handleTactileTare}
                 onClearTare={handleClearTactileTare}
               />

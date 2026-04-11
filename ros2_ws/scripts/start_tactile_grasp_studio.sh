@@ -15,12 +15,15 @@ FRONTEND_SESSION="programme-ui-frontend"
 LEGACY_ROS_SESSION="programme-ui-ros"
 FRONTEND_UNIT="programme-ui-frontend.service"
 LEGACY_ROS_UNIT="programme-ui-ros.service"
-BACKEND_UNIT="programme-phase8-full.service"
+BACKEND_UNIT="programme-system.service"
+LEGACY_BACKEND_UNIT="programme-phase8-full.service"
 QWEN_START_SCRIPT="$PROGRAMME_ROOT/scripts/start_qwen_vllm.sh"
 QWEN_STOP_SCRIPT="$PROGRAMME_ROOT/scripts/stop_qwen_vllm.sh"
 QWEN_MODELS_URL="${QWEN_MODELS_URL:-http://127.0.0.1:8000/v1/models}"
 QWEN_PORT="${QWEN_PORT:-8000}"
 PROGRAMME_WEB_UI_START_QWEN_VLLM="${PROGRAMME_WEB_UI_START_QWEN_VLLM:-1}"
+WINDOWS_BRIDGE_START_PS="$SCRIPT_DIR/start_stm32_tcp_bridge.ps1"
+WINDOWS_BRIDGE_STOP_PS="$SCRIPT_DIR/stop_stm32_tcp_bridge.ps1"
 
 OPEN_BROWSER=1
 if [[ "${1:-}" == "--no-browser" ]]; then
@@ -81,6 +84,38 @@ has_remote_vlm_config() {
   grep -Eq '^(export[[:space:]]+)?(PROGRAMME_DIALOG_API_KEY|PROGRAMME_REMOTE_VLM_API_KEY|DASHSCOPE_API_KEY|OPENAI_API_KEY)=' "$env_file"
 }
 
+run_windows_bridge_helper() {
+  local action="$1"
+  local helper_script=""
+
+  case "$action" in
+    start)
+      helper_script="$WINDOWS_BRIDGE_START_PS"
+      ;;
+    stop)
+      helper_script="$WINDOWS_BRIDGE_STOP_PS"
+      ;;
+    *)
+      echo "[start] unsupported Windows bridge helper action: $action"
+      return 1
+      ;;
+  esac
+
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v wslpath >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ! -f "$helper_script" ]]; then
+    return 0
+  fi
+
+  local helper_script_win
+  helper_script_win="$(wslpath -w "$helper_script")"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$helper_script_win" >/dev/null 2>&1
+}
+
 stop_systemd_unit() {
   local unit="$1"
   if ! has_systemd_user; then
@@ -113,10 +148,10 @@ start_component() {
       echo "[start] $component systemd unit exited immediately"
       systemctl --user status "$unit" --no-pager -l || true
       tail -n 120 "$log_file" || true
-      exit 1
+      return 1
     fi
     systemctl --user show "$unit" -p MainPID --value | head -n 1 >"$pid_file" || true
-    return
+    return 0
   fi
 
   if command -v tmux >/dev/null 2>&1; then
@@ -125,10 +160,10 @@ start_component() {
     if ! tmux has-session -t "$session" 2>/dev/null; then
       echo "[start] $component session exited immediately"
       tail -n 120 "$log_file" || true
-      exit 1
+      return 1
     fi
     tmux list-panes -t "$session" -F '#{pane_pid}' | head -n 1 >"$pid_file" || true
-    return
+    return 0
   fi
 
   echo "[start] tmux not found; falling back to setsid for $component"
@@ -141,7 +176,7 @@ start_component() {
       ;;
     *)
       echo "[start] unsupported component: $component"
-      exit 1
+      return 1
       ;;
   esac
   local pid=$!
@@ -150,8 +185,9 @@ start_component() {
   if ! kill -0 "$pid" 2>/dev/null; then
     echo "[start] $component process exited immediately"
     tail -n 120 "$log_file" || true
-    exit 1
+    return 1
   fi
+  return 0
 }
 
 restart_backend_service() {
@@ -250,6 +286,7 @@ kill_pid_file "$BACKEND_PID_FILE"
 kill_pid_file "$FRONTEND_PID_FILE"
 ensure_user_linger
 stop_systemd_unit "$BACKEND_UNIT"
+stop_systemd_unit "$LEGACY_BACKEND_UNIT"
 stop_systemd_unit "$LEGACY_ROS_UNIT"
 stop_systemd_unit "$FRONTEND_UNIT"
 kill_tmux_session "$LEGACY_ROS_SESSION"
@@ -258,9 +295,13 @@ kill_tmux_session "$FRONTEND_SESSION"
 pkill -f "tactile_web_gateway" 2>/dev/null || true
 pkill -f "npm run dev -- --host 127.0.0.1 --port 5173" 2>/dev/null || true
 pkill -f "vite --host 127.0.0.1 --port 5173" 2>/dev/null || true
+run_windows_bridge_helper stop || true
 
 ensure_python_deps
 ensure_qwen_service
+
+echo "[start] ensuring Windows STM32 TCP bridge"
+run_windows_bridge_helper start || echo "[start] warning: Windows STM32 TCP bridge helper did not report ready"
 
 echo "[start] launching ROS gateway stack"
 restart_backend_service
@@ -270,25 +311,35 @@ if ! wait_for_http "http://127.0.0.1:8765/api/bootstrap" "gateway" 60; then
   exit 1
 fi
 
+CONTROL_URL="http://127.0.0.1:8765/control"
+FRONTEND_MODE="gateway-static"
+
 echo "[start] launching frontend dev server"
-start_component "$FRONTEND_SESSION" "$FRONTEND_UNIT" "$FRONTEND_PID_FILE" "$FRONTEND_LOG" frontend
-if ! wait_for_http "http://127.0.0.1:5173/control" "frontend" 30; then
-  echo "[start] frontend failed to start; recent log:"
+if start_component "$FRONTEND_SESSION" "$FRONTEND_UNIT" "$FRONTEND_PID_FILE" "$FRONTEND_LOG" frontend && \
+   wait_for_http "http://127.0.0.1:5173/control" "frontend" 30; then
+  CONTROL_URL="http://127.0.0.1:5173/control"
+  FRONTEND_MODE="vite-dev"
+else
+  echo "[start] frontend dev server unavailable; using gateway-hosted frontend"
   tail -n 120 "$FRONTEND_LOG" || true
-  exit 1
 fi
 
 if [[ "$OPEN_BROWSER" -eq 1 ]] && command -v powershell.exe >/dev/null 2>&1; then
-  powershell.exe -NoProfile -Command "Start-Process 'http://127.0.0.1:5173/control'" >/dev/null 2>&1 || true
+  powershell.exe -NoProfile -Command "Start-Process '$CONTROL_URL'" >/dev/null 2>&1 || true
 fi
 
 echo "[start] Tactile Grasp Studio is ready"
-echo "[start] control page: http://127.0.0.1:5173/control"
+echo "[start] control page: $CONTROL_URL"
+echo "[start] frontend mode: $FRONTEND_MODE"
 echo "[start] gateway root: http://127.0.0.1:8765/"
 echo "[start] frontend log: $FRONTEND_LOG"
 echo "[start] qwen log: $QWEN_LOG"
 echo "[start] backend pid: $(<"$BACKEND_PID_FILE")"
-echo "[start] frontend pid: $(<"$FRONTEND_PID_FILE")"
-echo "[start] frontend session: $FRONTEND_SESSION"
+if [[ -f "$FRONTEND_PID_FILE" ]]; then
+  echo "[start] frontend pid: $(<"$FRONTEND_PID_FILE")"
+fi
 echo "[start] backend unit: $BACKEND_UNIT"
-echo "[start] frontend unit: $FRONTEND_UNIT"
+if [[ "$FRONTEND_MODE" == "vite-dev" ]]; then
+  echo "[start] frontend session: $FRONTEND_SESSION"
+  echo "[start] frontend unit: $FRONTEND_UNIT"
+fi

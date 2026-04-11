@@ -1,7 +1,8 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -24,6 +25,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_stack_param_file,
         description="Path to the Programme grasp stack parameter YAML",
     )
+    system_mode_arg = DeclareLaunchArgument(
+        "system_mode",
+        default_value="execution",
+        description="Programme system mode: execution for real tactile/vision, simulation for Gazebo-backed flow",
+    )
     vision_param_file_arg = DeclareLaunchArgument(
         "vision_param_file",
         default_value=default_vision_param_file,
@@ -44,6 +50,21 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Start the Programme web gateway together with the main stack",
     )
+    simulation_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "simulation_stack_start_delay_sec",
+        default_value="2.0",
+        description="Delay the heavy Gazebo/MoveIt sub-stack so the web/tactile bridge can come up first",
+    )
+    perception_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "perception_stack_start_delay_sec",
+        default_value="6.0",
+        description="Delay the vision/grasp perception stack until the simulation core is stable",
+    )
+    task_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "task_stack_start_delay_sec",
+        default_value="8.0",
+        description="Delay task coordination nodes until perception topics are publishing steadily",
+    )
     start_gazebo_gui_arg = DeclareLaunchArgument(
         "start_gazebo_gui",
         default_value="true",
@@ -53,6 +74,11 @@ def generate_launch_description() -> LaunchDescription:
         "start_rviz",
         default_value="true",
         description="Launch RViz for the MoveIt demo stack",
+    )
+    start_tactile_sim_node_arg = DeclareLaunchArgument(
+        "start_tactile_sim_node",
+        default_value="false",
+        description="Start the simulated tactile publisher inside the integrated stack",
     )
     use_gpu_accel_arg = DeclareLaunchArgument(
         "use_gpu_accel",
@@ -81,20 +107,27 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     stack_param_file = LaunchConfiguration("stack_param_file")
+    system_mode = LaunchConfiguration("system_mode")
     vision_param_file = LaunchConfiguration("vision_param_file")
     start_realsense = LaunchConfiguration("start_realsense")
     realsense_serial_no = LaunchConfiguration("realsense_serial_no")
     start_web_gateway = LaunchConfiguration("start_web_gateway")
+    simulation_stack_start_delay_sec = LaunchConfiguration("simulation_stack_start_delay_sec")
+    perception_stack_start_delay_sec = LaunchConfiguration("perception_stack_start_delay_sec")
+    task_stack_start_delay_sec = LaunchConfiguration("task_stack_start_delay_sec")
     start_gazebo_gui = LaunchConfiguration("start_gazebo_gui")
     start_rviz = LaunchConfiguration("start_rviz")
+    start_tactile_sim_node = LaunchConfiguration("start_tactile_sim_node")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
     server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     shadow_only_mode = LaunchConfiguration("shadow_only_mode")
     require_user_confirmation = LaunchConfiguration("require_user_confirmation")
+    execution_mode_enabled = PythonExpression(["'", system_mode, "' == 'execution'"])
 
     vision_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(vision_pipeline_launch),
+        condition=IfCondition(execution_mode_enabled),
         launch_arguments={
             "param_file": vision_param_file,
             "start_realsense": start_realsense,
@@ -106,9 +139,14 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(grasp_stack_launch),
         launch_arguments={
             "stack_param_file": stack_param_file,
+            "system_mode": system_mode,
             "start_web_gateway": start_web_gateway,
+            "simulation_stack_start_delay_sec": simulation_stack_start_delay_sec,
+            "perception_stack_start_delay_sec": perception_stack_start_delay_sec,
+            "task_stack_start_delay_sec": task_stack_start_delay_sec,
             "start_gazebo_gui": start_gazebo_gui,
             "start_rviz": start_rviz,
+            "start_tactile_sim_node": start_tactile_sim_node,
             "use_gpu_accel": use_gpu_accel,
             "server_use_gpu_accel": server_use_gpu_accel,
             "gpu_adapter": gpu_adapter,
@@ -120,12 +158,17 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             stack_param_file_arg,
+            system_mode_arg,
             vision_param_file_arg,
             start_realsense_arg,
             realsense_serial_no_arg,
             start_web_gateway_arg,
+            simulation_stack_start_delay_sec_arg,
+            perception_stack_start_delay_sec_arg,
+            task_stack_start_delay_sec_arg,
             start_gazebo_gui_arg,
             start_rviz_arg,
+            start_tactile_sim_node_arg,
             use_gpu_accel_arg,
             server_use_gpu_accel_arg,
             gpu_adapter_arg,

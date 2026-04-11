@@ -120,7 +120,7 @@ EOF
 source /opt/ros/jazzy/setup.bash
 cd /home/whispers/programme/ros2_ws
 source install/setup.bash
-ros2 launch tactile_bringup tactile_grasp_studio.launch.py
+ros2 launch tactile_bringup programme_system.launch.py
 ```
 
 默认 Web 入口：
@@ -131,23 +131,28 @@ http://127.0.0.1:8765
 
 ## 7. 当前主链关键节点
 
+- `realsense2_camera_node`（或对应相机驱动链）
 - `qwen_semantic_node`
 - `detector_seg_node`
 - `cloud_filter_node`
 - `primitive_fit_node`
 - `grasp_input_cloud_node`
 - `grasp_backend_node`
+- `stm32_bridge_node`
+- `grasp_profile_node`
 - `task_executive_node`
 - `search_target_skill_node`
 - `sim_pick_task_node`
 - `tactile_web_gateway`
+
+默认情况下，`programme_system.launch.py` 和兼容别名不会再拉起 `tactile_sim_node`，避免真实触觉和仿真触觉同时发布到 `/tactile/raw`。如果你只想测试 Web 抓取主栈，可以使用 `web_console_stack.launch.py`。
 
 ## 8. 快速自检
 
 检查节点：
 
 ```bash
-ros2 node list | grep -E "tactile_web_gateway|qwen_semantic_node|detector_seg_node|cloud_filter_node|primitive_fit_node|grasp_backend_node|task_executive_node|sim_pick_task_node"
+ros2 node list | grep -E "tactile_web_gateway|stm32_bridge_node|grasp_profile_node|qwen_semantic_node|detector_seg_node|cloud_filter_node|primitive_fit_node|grasp_backend_node|task_executive_node|sim_pick_task_node"
 ```
 
 检查网关：

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from setuptools import find_packages, setup
@@ -8,7 +9,8 @@ share_root = Path("share") / package_name
 
 
 def _frontend_dist_data_files() -> list[tuple[str, list[str]]]:
-    dist_root = Path("frontend") / "dist"
+    package_root = Path(__file__).resolve().parent
+    dist_root = package_root / "frontend" / "dist"
     if not dist_root.exists():
         return []
 
@@ -16,7 +18,9 @@ def _frontend_dist_data_files() -> list[tuple[str, list[str]]]:
     for file_path in sorted(path for path in dist_root.rglob("*") if path.is_file()):
         relative_dir = file_path.parent.relative_to(dist_root)
         install_dir = share_root / "frontend" / "dist" / relative_dir
-        grouped.setdefault(install_dir.as_posix(), []).append(file_path.as_posix())
+        grouped.setdefault(install_dir.as_posix(), []).append(
+            os.path.relpath(file_path.resolve(), Path.cwd())
+        )
     return list(grouped.items())
 
 

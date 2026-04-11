@@ -1414,6 +1414,7 @@ class TactileWebGateway(Node):
 
         self.declare_parameter("host", "127.0.0.1")
         self.declare_parameter("port", 8765)
+        self.declare_parameter("system_mode", "execution")
         self.declare_parameter("frontend_dist_dir", "")
         self.declare_parameter("live_state_period_sec", 0.15)
         self.declare_parameter("prompt_topic", "/qwen/user_prompt")
@@ -1503,6 +1504,9 @@ class TactileWebGateway(Node):
 
         self.host = str(self.get_parameter("host").value)
         self.port = int(self.get_parameter("port").value)
+        self.system_mode = str(self.get_parameter("system_mode").value or "execution").strip().lower()
+        if self.system_mode not in {"simulation", "execution"}:
+            self.system_mode = "execution"
         self.frontend_dist_dir = str(self.get_parameter("frontend_dist_dir").value or "").strip()
         self.live_state_period_sec = max(
             0.05, float(self.get_parameter("live_state_period_sec").value)
@@ -4960,6 +4964,58 @@ class TactileWebGateway(Node):
         )
         return ok, message, self.build_state()
 
+    def _build_vision_source_state(
+        self,
+        *,
+        health_by_node: dict[str, dict[str, Any]],
+        rgb_updated_at: float,
+        vision_updated_at: float,
+    ) -> dict[str, Any]:
+        mode = self.system_mode if self.system_mode in {"simulation", "execution"} else "execution"
+        source_name = "sim_camera" if mode == "simulation" else "realsense"
+        source_node = "sim_camera_bridge" if mode == "simulation" else "realsense_monitor_node"
+        source_connected = False
+        status_text = (
+            "waiting for simulation camera"
+            if mode == "simulation"
+            else "waiting for realsense stream"
+        )
+
+        latest_stream_at = max(float(rgb_updated_at), float(vision_updated_at))
+        stream_is_fresh = latest_stream_at > 0.0 and (_now_sec() - latest_stream_at) <= 2.0
+
+        if mode == "execution":
+            for key, item in health_by_node.items():
+                node_name = str(item.get("node_name") or key or "").strip()
+                if "realsense_monitor" not in node_name:
+                    continue
+                source_node = node_name or source_node
+                source_connected = bool(item.get("healthy", False)) and int(item.get("level", 0)) <= 0
+                message = str(item.get("message") or "").strip()
+                if message:
+                    status_text = message
+                elif source_connected:
+                    status_text = "realsense stream live"
+                else:
+                    status_text = "realsense monitor reporting stale or unavailable stream"
+                break
+            if not source_connected and stream_is_fresh:
+                source_connected = True
+                if not status_text or status_text.startswith("waiting for"):
+                    status_text = "realsense frames are arriving"
+        else:
+            source_connected = stream_is_fresh
+            if source_connected:
+                status_text = "simulation camera live"
+
+        return {
+            "system_mode": mode,
+            "source_name": source_name,
+            "source_node": source_node,
+            "source_connected": source_connected,
+            "status_text": status_text,
+        }
+
     def build_state(self) -> dict[str, Any]:
         with self._lock:
             semantic = copy.deepcopy(self._semantic_task)
@@ -5002,12 +5058,20 @@ class TactileWebGateway(Node):
             health_items = [tactile_freeze_issue, *health_items]
             health_issues = [tactile_freeze_issue, *health_issues]
 
+        rgb_updated_at = float(self.rgb_stream.latest().updated_at)
+        detection_overlay_updated_at = float(self.detection_overlay_stream.latest().updated_at)
+        grasp_overlay_updated_at = float(self.grasp_overlay_stream.latest().updated_at)
         vision_updated_at = max(
             float(detection.get("updated_at", 0.0)),
             float(detection_debug.get("updated_at", 0.0)),
-            float(self.rgb_stream.latest().updated_at),
-            float(self.detection_overlay_stream.latest().updated_at),
-            float(self.grasp_overlay_stream.latest().updated_at),
+            rgb_updated_at,
+            detection_overlay_updated_at,
+            grasp_overlay_updated_at,
+        )
+        vision_source = self._build_vision_source_state(
+            health_by_node=health_by_node,
+            rgb_updated_at=rgb_updated_at,
+            vision_updated_at=vision_updated_at,
         )
         debug_candidates = _debug_candidates_from_payload(detection_debug)
         candidate_summary = str(detection_debug.get("candidate_summary", "") or "").strip()
@@ -5044,6 +5108,7 @@ class TactileWebGateway(Node):
                     "state_version": state_version,
                     "host": self.host,
                     "port": self.port,
+                    "system_mode": self.system_mode,
                 },
                 "semantic": {
                     **semantic,
@@ -5056,6 +5121,10 @@ class TactileWebGateway(Node):
                     "debug_candidates": debug_candidates,
                     "selected_candidate": detection_debug.get("selected_candidate"),
                     "candidate_summary": candidate_summary,
+                    "source_name": vision_source["source_name"],
+                    "source_node": vision_source["source_node"],
+                    "source_connected": vision_source["source_connected"],
+                    "status_text": vision_source["status_text"],
                     "image_width": int(
                         detection.get("image_width", 0)
                         or detection_debug.get("image_width", 0)

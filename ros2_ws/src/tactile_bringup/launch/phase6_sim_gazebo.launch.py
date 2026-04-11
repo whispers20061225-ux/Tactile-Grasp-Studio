@@ -88,6 +88,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Start the legacy tactile_ui_subscriber console bridge",
     )
+    start_tactile_sim_node_arg = DeclareLaunchArgument(
+        "start_tactile_sim_node",
+        default_value="true",
+        description="Start the tactile_sim_node publisher for simulated tactile frames",
+    )
 
     param_file = LaunchConfiguration("param_file")
     world = LaunchConfiguration("world")
@@ -103,6 +108,7 @@ def generate_launch_description() -> LaunchDescription:
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     start_demo_task_node = LaunchConfiguration("start_demo_task_node")
     start_ui_subscriber = LaunchConfiguration("start_ui_subscriber")
+    start_tactile_sim_node = LaunchConfiguration("start_tactile_sim_node")
 
     gazebo_arm_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -132,6 +138,7 @@ def generate_launch_description() -> LaunchDescription:
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
         parameters=[param_file, {"use_sim_time": use_sim_time}],
+        condition=IfCondition(start_tactile_sim_node),
         **respawn_kwargs,
     )
 
@@ -193,6 +200,7 @@ def generate_launch_description() -> LaunchDescription:
             gpu_adapter_arg,
             start_demo_task_node_arg,
             start_ui_subscriber_arg,
+            start_tactile_sim_node_arg,
             gazebo_arm_launch,
             tactile_sim_node,
             arm_sim_driver_node,

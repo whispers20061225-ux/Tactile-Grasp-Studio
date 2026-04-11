@@ -13,9 +13,11 @@ $watchdogLog = Join-Path $runtimeDir "watchdog.log"
 $debugHelperPidFile = Join-Path $runtimeDir "debug-helper.win.pid"
 $linuxStartScript = "/home/whispers/programme/ros2_ws/scripts/start_tactile_grasp_studio.sh"
 $stopScript = Join-Path $PSScriptRoot "stop_tactile_grasp_studio.ps1"
+$bridgeStartScript = Join-Path $PSScriptRoot "start_stm32_tcp_bridge.ps1"
 $debugHelperScript = Join-Path $PSScriptRoot "tactile_grasp_studio_helper.ps1"
 $debugHelperLog = Join-Path $runtimeDir "debug-helper.log"
-$frontendHealthUrl = "http://127.0.0.1:5173/control"
+$frontendDevUrl = "http://127.0.0.1:5173/control"
+$frontendGatewayUrl = "http://127.0.0.1:8765/control"
 $gatewayHealthUrl = "http://127.0.0.1:8765/api/bootstrap"
 $watchdogRestartThreshold = 3
 
@@ -48,6 +50,60 @@ function Wait-HttpReady {
     throw "[start] $Label did not become ready: $Url"
 }
 
+function Get-ReadyHttpUrl {
+    param([Parameter(Mandatory = $true)][string[]]$Urls)
+    foreach ($url in $Urls) {
+        if (Test-HttpReady -Url $url) {
+            return $url
+        }
+    }
+    return ""
+}
+
+function Wait-AnyHttpReady {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Urls,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int]$TimeoutSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $readyUrl = Get-ReadyHttpUrl -Urls $Urls
+        if ($readyUrl) {
+            Write-Host "[start] $Label ready: $readyUrl"
+            return $readyUrl
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    throw "[start] $Label did not become ready: $($Urls -join ', ')"
+}
+
+function Ensure-TactileBridgeReady {
+    param([switch]$Quiet)
+
+    if (-not (Test-Path $bridgeStartScript)) {
+        if (-not $Quiet) {
+            Write-Warning "[start] tactile bridge helper not found: $bridgeStartScript"
+        }
+        return $false
+    }
+
+    try {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bridgeStartScript | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "[start] tactile bridge helper exited with code $LASTEXITCODE"
+        }
+        return $true
+    } catch {
+        if (-not $Quiet) {
+            Write-Warning ("[start] tactile bridge helper failed: " + $_.Exception.Message)
+        }
+        return $false
+    }
+}
+
 function Invoke-WslStart {
     $arguments = @("-d", $Distro, "--", $linuxStartScript, "--no-browser")
     & wsl.exe @arguments
@@ -61,22 +117,25 @@ if ($Watchdog) {
     Add-Content -Path $watchdogLog -Value ("[watchdog] started at {0}" -f (Get-Date -Format o))
     $consecutiveFailures = 0
     while ($true) {
-        $frontendOk = Test-HttpReady -Url $frontendHealthUrl
+        $bridgeOk = Ensure-TactileBridgeReady -Quiet
+        $frontendUrl = Get-ReadyHttpUrl -Urls @($frontendDevUrl, $frontendGatewayUrl)
+        $frontendOk = -not [string]::IsNullOrWhiteSpace($frontendUrl)
         $gatewayOk = Test-HttpReady -Url $gatewayHealthUrl
         if ($frontendOk -and $gatewayOk) {
             $consecutiveFailures = 0
         } else {
             $consecutiveFailures += 1
             Add-Content -Path $watchdogLog -Value (
-                "[watchdog] healthcheck failed at {0}: frontend={1} gateway={2} consecutive={3}" -f
-                (Get-Date -Format o), $frontendOk, $gatewayOk, $consecutiveFailures
+                "[watchdog] healthcheck failed at {0}: tactile_bridge={1} frontend={2} gateway={3} ready_url={4} consecutive={5}" -f
+                (Get-Date -Format o), $bridgeOk, $frontendOk, $gatewayOk, $frontendUrl, $consecutiveFailures
             )
             if ($consecutiveFailures -ge $watchdogRestartThreshold) {
                 Add-Content -Path $watchdogLog -Value ("[watchdog] restarting stack at {0}" -f (Get-Date -Format o))
                 try {
+                    Ensure-TactileBridgeReady -Quiet | Out-Null
                     Invoke-WslStart
                     Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 60
-                    Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 30
+                    Wait-AnyHttpReady -Urls @($frontendDevUrl, $frontendGatewayUrl) -Label "frontend" -TimeoutSec 30 | Out-Null
                     $consecutiveFailures = 0
                 } catch {
                     Add-Content -Path $watchdogLog -Value (
@@ -92,10 +151,12 @@ if ($Watchdog) {
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopScript -Distro $Distro | Out-Null
 
+Ensure-TactileBridgeReady -Quiet | Out-Null
 Invoke-WslStart
 
 Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 30
-Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 20
+$controlUrl = Wait-AnyHttpReady -Urls @($frontendDevUrl, $frontendGatewayUrl) -Label "frontend" -TimeoutSec 20
+$frontendMode = if ($controlUrl -eq $frontendDevUrl) { "vite-dev" } else { "gateway-static" }
 
 $debugHelperProcess = Start-Process -FilePath "powershell.exe" `
     -ArgumentList @(
@@ -127,11 +188,12 @@ if ($EnableWatchdog) {
 }
 
 if (-not $NoBrowser) {
-    Start-Process "http://127.0.0.1:5173/control" | Out-Null
+    Start-Process $controlUrl | Out-Null
 }
 
 Write-Host "[start] Tactile Grasp Studio is ready"
-Write-Host "[start] control page: http://127.0.0.1:5173/control"
+Write-Host "[start] control page: $controlUrl"
+Write-Host "[start] frontend mode: $frontendMode"
 Write-Host "[start] gateway root: http://127.0.0.1:8765/"
 if ($EnableWatchdog) {
     Write-Host "[start] watchdog pid file: $watchdogPidFile"

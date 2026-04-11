@@ -20,7 +20,6 @@ export type BusyAction =
   | "return-home"
   | "scene-reset"
   | "debug-open"
-  | "tactile-mode"
   | "tactile-tare"
   | "tactile-clear-tare"
   | null;
@@ -66,7 +65,14 @@ export const STREAM_OPTIONS: Array<{ key: StreamName; label: string }> = [
 ];
 
 export const DEFAULT_STATE: UiState = {
-  connection: { backend_ready: false, backend_time: 0, state_version: 0, host: "", port: 0 },
+  connection: {
+    backend_ready: false,
+    backend_time: 0,
+    state_version: 0,
+    host: "",
+    port: 0,
+    system_mode: "execution",
+  },
   semantic: {
     task: "pick",
     target_label: "",
@@ -84,6 +90,10 @@ export const DEFAULT_STATE: UiState = {
     debug_candidates: [],
     selected_candidate: null,
     candidate_summary: "",
+    source_name: "",
+    source_node: "",
+    source_connected: false,
+    status_text: "",
     image_width: 0,
     image_height: 0,
     updated_at: 0,

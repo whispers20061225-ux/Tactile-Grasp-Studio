@@ -1,7 +1,7 @@
 param(
     [string]$PortName = "COM4",
     [int]$BaudRate = 115200,
-    [string]$ListenHost = "127.0.0.1",
+    [string]$ListenHost = "0.0.0.0",
     [int]$ListenPort = 19024,
     [int]$ReadTimeoutMs = 1000
 )

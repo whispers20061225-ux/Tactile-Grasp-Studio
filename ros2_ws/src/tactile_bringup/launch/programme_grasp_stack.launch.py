@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from moveit_configs_utils import MoveItConfigsBuilder
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -136,6 +136,26 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_param_file,
         description="Path to the Programme grasp stack parameter YAML",
     )
+    system_mode_arg = DeclareLaunchArgument(
+        "system_mode",
+        default_value="execution",
+        description="Programme system mode: execution for real tactile/vision, simulation for Gazebo-backed flow",
+    )
+    simulation_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "simulation_stack_start_delay_sec",
+        default_value="2.0",
+        description="Delay the heavy Gazebo/MoveIt simulation stack so the web/tactile bridge can come up first",
+    )
+    perception_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "perception_stack_start_delay_sec",
+        default_value="6.0",
+        description="Delay the vision/grasp perception stack until the simulation core and web layer are stable",
+    )
+    task_stack_start_delay_sec_arg = DeclareLaunchArgument(
+        "task_stack_start_delay_sec",
+        default_value="8.0",
+        description="Delay task coordination nodes until perception topics are publishing steadily",
+    )
     search_start_delay_sec_arg = DeclareLaunchArgument(
         "search_start_delay_sec",
         default_value="12.0",
@@ -153,7 +173,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     start_ggcnn_shadow_node_arg = DeclareLaunchArgument(
         "start_ggcnn_shadow_node",
-        default_value="true",
+        default_value="false",
         description="Start a shadow GG-CNN grasp backend for visualization-only proposals",
     )
     start_ggcnn_shadow_image_view_arg = DeclareLaunchArgument(
@@ -216,6 +236,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Launch RViz for the MoveIt demo stack",
     )
+    start_tactile_sim_node_arg = DeclareLaunchArgument(
+        "start_tactile_sim_node",
+        default_value="false",
+        description="Start the simulated tactile publisher alongside the integrated stack",
+    )
     use_gpu_accel_arg = DeclareLaunchArgument(
         "use_gpu_accel",
         default_value="true",
@@ -236,13 +261,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Require an explicit execute command before the pick task starts",
     )
-    use_sim_time_arg = DeclareLaunchArgument(
-        "use_sim_time",
-        default_value="true",
-        description="Use simulation clock across the modular grasp stack",
-    )
-
     stack_param_file = LaunchConfiguration("stack_param_file")
+    system_mode = LaunchConfiguration("system_mode")
+    simulation_stack_start_delay_sec = LaunchConfiguration("simulation_stack_start_delay_sec")
+    perception_stack_start_delay_sec = LaunchConfiguration("perception_stack_start_delay_sec")
+    task_stack_start_delay_sec = LaunchConfiguration("task_stack_start_delay_sec")
     search_start_delay_sec = LaunchConfiguration("search_start_delay_sec")
     pick_start_delay_sec = LaunchConfiguration("pick_start_delay_sec")
     shadow_only_mode = LaunchConfiguration("shadow_only_mode")
@@ -259,12 +282,16 @@ def generate_launch_description() -> LaunchDescription:
     auto_start_search_sweep = LaunchConfiguration("auto_start_search_sweep")
     start_gazebo_gui = LaunchConfiguration("start_gazebo_gui")
     start_rviz = LaunchConfiguration("start_rviz")
+    start_tactile_sim_node = LaunchConfiguration("start_tactile_sim_node")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
     server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     require_user_confirmation = LaunchConfiguration("require_user_confirmation")
-    use_sim_time = LaunchConfiguration("use_sim_time")
-    sim_time_params = {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)}
+    simulation_mode_enabled = PythonExpression(["'", system_mode, "' == 'simulation'"])
+    execution_mode_enabled = PythonExpression(["'", system_mode, "' == 'execution'"])
+    sim_time_params = {
+        "use_sim_time": ParameterValue(simulation_mode_enabled, value_type=bool)
+    }
     qwen_runtime_params, dialog_runtime_params = _remote_vlm_params()
     sim_pick_moveit_config = (
         MoveItConfigsBuilder("dofbot", package_name="tactile_moveit_config")
@@ -279,9 +306,12 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "start_search_demo": "false",
             "start_pick_demo": "false",
-            "use_sim_time": use_sim_time,
+            "use_sim_time": simulation_mode_enabled,
             "start_gazebo_gui": start_gazebo_gui,
             "start_rviz": start_rviz,
+            "sim_start_demo_task_node": "false",
+            "sim_start_ui_subscriber": "false",
+            "sim_start_tactile_sim_node": start_tactile_sim_node,
             "use_gpu_accel": use_gpu_accel,
             "server_use_gpu_accel": server_use_gpu_accel,
             "gpu_adapter": gpu_adapter,
@@ -359,6 +389,7 @@ def generate_launch_description() -> LaunchDescription:
         name="stm32_bridge_node",
         output="screen",
         arguments=core_info_args,
+        condition=IfCondition(execution_mode_enabled),
         parameters=[stack_param_file],
         **respawn_kwargs,
     )
@@ -380,7 +411,12 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         arguments=core_info_args,
         condition=IfCondition(start_web_gateway),
-        parameters=[stack_param_file, sim_time_params, dialog_runtime_params],
+        parameters=[
+            stack_param_file,
+            sim_time_params,
+            dialog_runtime_params,
+            {"system_mode": system_mode},
+        ],
         **respawn_kwargs,
     )
 
@@ -492,6 +528,7 @@ def generate_launch_description() -> LaunchDescription:
 
     delayed_search_sweep = TimerAction(
         period=search_start_delay_sec,
+        condition=IfCondition(simulation_mode_enabled),
         actions=[search_sweep_node],
     )
 
@@ -538,13 +575,71 @@ def generate_launch_description() -> LaunchDescription:
 
     delayed_pick_task = TimerAction(
         period=pick_start_delay_sec,
-        condition=UnlessCondition(shadow_only_mode),
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "(",
+                    "'",
+                    system_mode,
+                    "' == 'simulation'",
+                    ") and (",
+                    "'",
+                    shadow_only_mode,
+                    "' != 'true'",
+                    ") and (",
+                    "'",
+                    shadow_only_mode,
+                    "' != 'True'",
+                    ")",
+                ]
+            )
+        ),
         actions=[pick_task_node],
+    )
+
+    immediate_bootstrap_actions = [
+        stm32_bridge_node,
+        grasp_profile_node,
+        web_gateway_node,
+    ]
+
+    delayed_simulation_stack = TimerAction(
+        period=simulation_stack_start_delay_sec,
+        condition=IfCondition(simulation_mode_enabled),
+        actions=[moveit_demo],
+    )
+
+    delayed_perception_stack = TimerAction(
+        period=perception_stack_start_delay_sec,
+        actions=[
+            qwen_semantic_node,
+            detector_seg_node,
+            cloud_filter_node,
+            primitive_fit_node,
+            grasp_input_cloud_node,
+            grasp_backend_node,
+            ggcnn_shadow_node,
+            ggcnn_shadow_image_view,
+            graspgen_topk_bridge_node,
+            graspgen_shadow_node,
+        ],
+    )
+
+    delayed_task_stack = TimerAction(
+        period=task_stack_start_delay_sec,
+        actions=[
+            search_target_skill_node,
+            task_executive_node,
+        ],
     )
 
     return LaunchDescription(
         [
             stack_param_file_arg,
+            system_mode_arg,
+            simulation_stack_start_delay_sec_arg,
+            perception_stack_start_delay_sec_arg,
+            task_stack_start_delay_sec_arg,
             search_start_delay_sec_arg,
             pick_start_delay_sec_arg,
             shadow_only_mode_arg,
@@ -561,28 +656,16 @@ def generate_launch_description() -> LaunchDescription:
             auto_start_search_sweep_arg,
             start_gazebo_gui_arg,
             start_rviz_arg,
+            start_tactile_sim_node_arg,
             use_gpu_accel_arg,
             server_use_gpu_accel_arg,
             gpu_adapter_arg,
             require_user_confirmation_arg,
-            use_sim_time_arg,
-            moveit_demo,
-            qwen_semantic_node,
-            detector_seg_node,
-            cloud_filter_node,
-            primitive_fit_node,
-            grasp_input_cloud_node,
-            stm32_bridge_node,
-            grasp_profile_node,
-            web_gateway_node,
-            grasp_backend_node,
-            ggcnn_shadow_node,
-            ggcnn_shadow_image_view,
-            graspgen_topk_bridge_node,
-            graspgen_shadow_node,
+            *immediate_bootstrap_actions,
+            delayed_simulation_stack,
+            delayed_perception_stack,
+            delayed_task_stack,
             delayed_search_sweep,
-            search_target_skill_node,
-            task_executive_node,
             delayed_pick_task,
         ]
     )

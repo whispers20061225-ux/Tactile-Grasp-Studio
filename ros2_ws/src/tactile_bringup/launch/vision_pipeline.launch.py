@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -46,7 +47,7 @@ def generate_launch_description() -> LaunchDescription:
                 "pointcloud.enable": False,
                 "rgb_camera.profile": "640x480x30",
                 "depth_module.profile": "640x480x30",
-                "serial_no": realsense_serial_no,
+                "serial_no": ParameterValue(realsense_serial_no, value_type=str),
             }
         ],
         condition=IfCondition(start_realsense),

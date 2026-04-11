@@ -51,6 +51,10 @@ function candidateIsOverlayVisible(candidate: CandidateDebug | null | undefined)
 export function VisionPage(props: VisionPageProps) {
   const [activeStream, setActiveStream] = useState<keyof StreamMap>("detection_overlay");
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const systemMode = (props.state.connection.system_mode || "execution").toLowerCase();
+  const visionSourceName = props.state.vision.source_name || (systemMode === "simulation" ? "sim_camera" : "realsense");
+  const visionSourceConnected = Boolean(props.state.vision.source_connected);
+  const visionStatusText = props.state.vision.status_text || "waiting for vision source";
   const visionCandidates = useMemo<CandidateDebug[]>(() => {
     if (props.state.vision.debug_candidates.length > 0) return props.state.vision.debug_candidates;
     const fallback = (props.state.vision.debug as { top_candidates?: CandidateDebug[] }).top_candidates;
@@ -145,7 +149,20 @@ export function VisionPage(props: VisionPageProps) {
           testId="vision-stage"
         />
 
+        <div className="status-row">
+          <StatusPill tone={systemMode === "execution" ? "info" : "neutral"}>
+            System {systemMode}
+          </StatusPill>
+          <StatusPill tone={visionSourceConnected ? "success" : "warn"}>
+            Vision Link {visionSourceConnected ? "up" : "down"}
+          </StatusPill>
+          <StatusPill tone={visionSourceConnected ? "success" : "neutral"}>
+            Source {visionSourceName}
+          </StatusPill>
+        </div>
+
         <div className="metric-grid">
+          <div className="metric-card"><span className="metric-label">Vision Status</span><strong>{visionStatusText}</strong></div>
           <div className="metric-card"><span className="metric-label">Accepted</span><strong>{props.state.vision.detection.accepted ? "yes" : "no"}</strong></div>
           <div className="metric-card"><span className="metric-label">Target Label</span><strong>{candidateDisplayLabel(props.state.vision.selected_candidate) !== "--" ? candidateDisplayLabel(props.state.vision.selected_candidate) : (props.state.vision.detection.target_label || "--")}</strong></div>
           <div className="metric-card"><span className="metric-label">Confidence</span><strong>{formatNumber(props.state.vision.detection.confidence, 4)}</strong></div>

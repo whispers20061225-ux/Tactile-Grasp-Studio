@@ -13,7 +13,10 @@ ROS_SESSION="programme-ui-ros"
 FRONTEND_SESSION="programme-ui-frontend"
 ROS_UNIT="programme-ui-ros.service"
 FRONTEND_UNIT="programme-ui-frontend.service"
+BACKEND_UNIT="programme-system.service"
+LEGACY_BACKEND_UNIT="programme-phase8-full.service"
 QWEN_STOP_SCRIPT="$PROGRAMME_ROOT/scripts/stop_qwen_vllm.sh"
+WINDOWS_BRIDGE_STOP_PS="$SCRIPT_DIR/stop_stm32_tcp_bridge.ps1"
 
 kill_pid_file() {
   local pid_file="$1"
@@ -51,11 +54,29 @@ stop_systemd_unit() {
   systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
 }
 
+stop_windows_bridge_helper() {
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v wslpath >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ ! -f "$WINDOWS_BRIDGE_STOP_PS" ]]; then
+    return 0
+  fi
+
+  local helper_script_win
+  helper_script_win="$(wslpath -w "$WINDOWS_BRIDGE_STOP_PS")"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$helper_script_win" >/dev/null 2>&1
+}
+
 echo "[stop] stopping Tactile Grasp Studio processes"
 kill_pid_file "$ROS_PID_FILE"
 kill_pid_file "$FRONTEND_PID_FILE"
 stop_systemd_unit "$ROS_UNIT"
 stop_systemd_unit "$FRONTEND_UNIT"
+stop_systemd_unit "$BACKEND_UNIT"
+stop_systemd_unit "$LEGACY_BACKEND_UNIT"
 kill_tmux_session "$ROS_SESSION"
 kill_tmux_session "$FRONTEND_SESSION"
 "$SCRIPT_DIR/cleanup_sim_stack.sh" >/dev/null 2>&1 || true
@@ -64,7 +85,11 @@ pkill -f "programme_web_ui_component.sh frontend" 2>/dev/null || true
 pkill -f "tactile_grasp_studio_component.sh ros" 2>/dev/null || true
 pkill -f "tactile_grasp_studio_component.sh frontend" 2>/dev/null || true
 pkill -f "ros2 launch tactile_bringup phase8_web_ui.launch.py" 2>/dev/null || true
+pkill -f "ros2 launch tactile_bringup phase8_vision_web.launch.py" 2>/dev/null || true
 pkill -f "ros2 launch tactile_bringup tactile_grasp_studio.launch.py" 2>/dev/null || true
+pkill -f "ros2 launch tactile_bringup programme_mainline.launch.py" 2>/dev/null || true
+pkill -f "ros2 launch tactile_bringup programme_system.launch.py" 2>/dev/null || true
+pkill -f "ros2 launch tactile_bringup vision_web_stack.launch.py" 2>/dev/null || true
 pkill -f "tactile_web_gateway" 2>/dev/null || true
 pkill -f "npm run dev -- --host 127.0.0.1 --port 5173" 2>/dev/null || true
 pkill -f "vite --host 127.0.0.1 --port 5173" 2>/dev/null || true
@@ -72,5 +97,6 @@ if [[ -f "$QWEN_OWNED_MARKER" && -x "$QWEN_STOP_SCRIPT" ]]; then
   echo "[stop] stopping managed Qwen vLLM service"
   QWEN_PID_FILE="$QWEN_PID_FILE" "$QWEN_STOP_SCRIPT" || true
 fi
+stop_windows_bridge_helper || true
 rm -f "$QWEN_OWNED_MARKER" "$QWEN_PID_FILE"
 echo "[stop] done"

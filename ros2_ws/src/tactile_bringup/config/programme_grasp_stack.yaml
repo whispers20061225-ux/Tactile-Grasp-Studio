@@ -3,7 +3,7 @@ qwen_semantic_node:
     prompt_topic: "/qwen/user_prompt"
     semantic_task_topic: "/qwen/semantic_task"
     semantic_result_topic: "/qwen/semantic_result"
-    color_topic: "/camera/camera/color/image_raw"
+    color_topic: "/camera/relay/color/image_raw"
     enabled: true
     use_visual_context: false
     auto_infer_on_start: false
@@ -24,7 +24,7 @@ qwen_semantic_node:
 
 detector_seg_node:
   ros__parameters:
-    color_topic: "/camera/camera/color/image_raw"
+    color_topic: "/camera/relay/color/image_raw"
     semantic_task_topic: "/qwen/semantic_task"
     detection_result_topic: "/perception/detection_result"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
@@ -119,8 +119,8 @@ cloud_filter_node:
   ros__parameters:
     detection_result_topic: "/perception/detection_result"
     semantic_task_topic: "/qwen/semantic_task"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
+    depth_topic: "/camera/relay/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/relay/color/camera_info"
     target_cloud_topic: "/perception/target_cloud"
     target_cloud_markers_topic: "/perception/target_cloud_markers"
     target_pose_topic: "/sim/perception/target_pose"
@@ -247,8 +247,8 @@ grasp_backend_node:
     target_locked_topic: "/sim/perception/target_locked"
     refresh_request_topic: "/grasp/refresh_request"
     pick_status_topic: "/sim/task/pick_status"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
+    depth_topic: "/camera/relay/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/relay/color/camera_info"
     candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
     candidate_markers_topic: "/grasp/candidate_markers"
     selected_contact_point_1_topic: "/grasp/selected_contact_point_1_cloud"
@@ -580,14 +580,15 @@ search_target_skill_node:
 
 tactile_web_gateway:
   ros__parameters:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8765
+    system_mode: "execution"
     frontend_dist_dir: "/home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend/dist"
     live_state_period_sec: 0.15
     prompt_topic: "/qwen/user_prompt"
     semantic_task_topic: "/qwen/semantic_task"
     semantic_result_topic: "/qwen/semantic_result"
-    color_topic: "/camera/camera/color/image_raw"
+    color_topic: "/camera/relay/color/image_raw"
     detection_result_topic: "/perception/detection_result"
     detection_debug_topic: "/perception/detection_debug"
     detection_debug_overlay_topic: "/perception/detection_debug_overlay"
