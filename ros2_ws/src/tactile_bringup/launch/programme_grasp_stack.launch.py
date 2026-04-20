@@ -159,7 +159,7 @@ def generate_launch_description() -> LaunchDescription:
     search_start_delay_sec_arg = DeclareLaunchArgument(
         "search_start_delay_sec",
         default_value="12.0",
-        description="Delay the search sweep until simulation topics and controllers are stable",
+        description="Delay the search sweep until perception topics and arm controllers are stable",
     )
     pick_start_delay_sec_arg = DeclareLaunchArgument(
         "pick_start_delay_sec",
@@ -241,6 +241,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Start the simulated tactile publisher alongside the integrated stack",
     )
+    arm_serial_port_arg = DeclareLaunchArgument(
+        "arm_serial_port",
+        default_value="tcp://windows-host:19024",
+        description="Serial or tcp bridge endpoint for the real arm driver",
+    )
     use_gpu_accel_arg = DeclareLaunchArgument(
         "use_gpu_accel",
         default_value="true",
@@ -283,6 +288,7 @@ def generate_launch_description() -> LaunchDescription:
     start_gazebo_gui = LaunchConfiguration("start_gazebo_gui")
     start_rviz = LaunchConfiguration("start_rviz")
     start_tactile_sim_node = LaunchConfiguration("start_tactile_sim_node")
+    arm_serial_port = LaunchConfiguration("arm_serial_port")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
     server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
@@ -387,6 +393,28 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_hardware",
         executable="stm32_bridge_node",
         name="stm32_bridge_node",
+        output="screen",
+        arguments=core_info_args,
+        condition=IfCondition(execution_mode_enabled),
+        parameters=[stack_param_file],
+        **respawn_kwargs,
+    )
+
+    arm_driver_node = Node(
+        package="tactile_hardware",
+        executable="arm_driver_node",
+        name="arm_driver_node",
+        output="screen",
+        arguments=core_info_args,
+        condition=IfCondition(execution_mode_enabled),
+        parameters=[stack_param_file, {"arm_serial_port": arm_serial_port}],
+        **respawn_kwargs,
+    )
+
+    arm_control_node = Node(
+        package="tactile_control",
+        executable="arm_control_node",
+        name="arm_control_node",
         output="screen",
         arguments=core_info_args,
         condition=IfCondition(execution_mode_enabled),
@@ -526,9 +554,10 @@ def generate_launch_description() -> LaunchDescription:
         **respawn_kwargs,
     )
 
+    # Despite the legacy sim_* names, these task backends serve both real and simulated flows.
     delayed_search_sweep = TimerAction(
         period=search_start_delay_sec,
-        condition=IfCondition(simulation_mode_enabled),
+        condition=UnlessCondition(shadow_only_mode),
         actions=[search_sweep_node],
     )
 
@@ -575,30 +604,14 @@ def generate_launch_description() -> LaunchDescription:
 
     delayed_pick_task = TimerAction(
         period=pick_start_delay_sec,
-        condition=IfCondition(
-            PythonExpression(
-                [
-                    "(",
-                    "'",
-                    system_mode,
-                    "' == 'simulation'",
-                    ") and (",
-                    "'",
-                    shadow_only_mode,
-                    "' != 'true'",
-                    ") and (",
-                    "'",
-                    shadow_only_mode,
-                    "' != 'True'",
-                    ")",
-                ]
-            )
-        ),
+        condition=UnlessCondition(shadow_only_mode),
         actions=[pick_task_node],
     )
 
     immediate_bootstrap_actions = [
         stm32_bridge_node,
+        arm_driver_node,
+        arm_control_node,
         grasp_profile_node,
         web_gateway_node,
     ]
@@ -657,6 +670,7 @@ def generate_launch_description() -> LaunchDescription:
             start_gazebo_gui_arg,
             start_rviz_arg,
             start_tactile_sim_node_arg,
+            arm_serial_port_arg,
             use_gpu_accel_arg,
             server_use_gpu_accel_arg,
             gpu_adapter_arg,

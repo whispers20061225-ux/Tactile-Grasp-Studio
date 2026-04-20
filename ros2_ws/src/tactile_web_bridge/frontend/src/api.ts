@@ -144,6 +144,94 @@ export async function postExecute(): Promise<UiState> {
   return response.state;
 }
 
+export async function postArmEnable(enabled: boolean): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/arm/enable", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+  return response.state;
+}
+
+export async function postArmMoveJoints(
+  jointIds: number[],
+  anglesDeg: number[],
+  durationMs: number,
+  wait: boolean,
+): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/arm/move_joints", {
+    method: "POST",
+    body: JSON.stringify({
+      joint_ids: jointIds,
+      angles_deg: anglesDeg,
+      duration_ms: durationMs,
+      wait,
+    }),
+  });
+  return response.state;
+}
+
+export async function postArmMoveGripper(
+  angleDeg: number,
+  durationMs: number,
+  wait: boolean,
+): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/arm/move_gripper", {
+    method: "POST",
+    body: JSON.stringify({
+      angle_deg: angleDeg,
+      duration_ms: durationMs,
+      wait,
+    }),
+  });
+  return response.state;
+}
+
+export async function postStrategySelect(strategyId: string): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/strategy/select", {
+    method: "POST",
+    body: JSON.stringify({ strategy_id: strategyId }),
+  });
+  return response.state;
+}
+
+export async function postPlannerStrategySelect(strategyId: string): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/planner/select", {
+    method: "POST",
+    body: JSON.stringify({ strategy_id: strategyId }),
+  });
+  return response.state;
+}
+
+export async function postGripperTuningApply(payload: Record<string, unknown>): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/gripper/tuning/apply", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return response.state;
+}
+
+export async function postGripperTuningAction(
+  action: string,
+  payload: Record<string, unknown> = {},
+): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/gripper/tuning/action", {
+    method: "POST",
+    body: JSON.stringify({
+      action,
+      ...payload,
+    }),
+  });
+  return response.state;
+}
+
+export async function postGripperTuningSaveDefaults(payload: Record<string, unknown>): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/gripper/tuning/save-defaults", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return response.state;
+}
+
 export async function postReturnHome(): Promise<UiState> {
   const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/return-home", {
     method: "POST",

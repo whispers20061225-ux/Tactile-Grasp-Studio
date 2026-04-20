@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import socket
+import struct
 import time
 from collections import deque
 from typing import Deque, List, Optional, Tuple
@@ -25,66 +26,107 @@ from .stm32_tactile_codec import ParsedFrame, decode_taxels, decode_totals, pars
 class TcpLineClient:
     def __init__(self, host: str, port: int, timeout: float) -> None:
         self._timeout = max(0.05, float(timeout))
-        self._socket = socket.create_connection((host, port), timeout=self._timeout)
-        self._socket.settimeout(self._timeout)
+        self._host = self._resolve_host(host)
+        self._port = int(port)
+        self._socket = None
         self._buffer = bytearray()
+        self._closed = False
+
+    @staticmethod
+    def _resolve_host(host: str) -> str:
+        normalized = str(host or "").strip()
+        if not normalized:
+            raise ValueError("tcp host is empty")
+        try:
+            socket.getaddrinfo(normalized, None)
+            return normalized
+        except socket.gaierror:
+            fallback = TcpLineClient._default_gateway_ip() if normalized == "windows-host" else ""
+            if fallback:
+                return fallback
+            raise
+
+    @staticmethod
+    def _default_gateway_ip() -> str:
+        try:
+            with open("/proc/net/route", "r", encoding="utf-8") as handle:
+                next(handle, None)
+                for line in handle:
+                    fields = line.strip().split()
+                    if len(fields) < 3:
+                        continue
+                    destination = fields[1]
+                    gateway = fields[2]
+                    if destination != "00000000":
+                        continue
+                    return socket.inet_ntoa(struct.pack("<L", int(gateway, 16)))
+        except Exception:
+            return ""
+        return ""
 
     @property
     def is_open(self) -> bool:
-        return self._socket is not None
+        return not self._closed
+
+    def _open_socket(self) -> None:
+        if self._closed:
+            raise RuntimeError("tcp socket is closed")
+        if self._socket is not None:
+            return
+        self._socket = socket.create_connection((self._host, self._port), timeout=self._timeout)
+        self._socket.settimeout(self._timeout)
+
+    def _release_socket(self) -> None:
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except Exception:
+                pass
+            finally:
+                self._socket = None
+        self._buffer.clear()
 
     def write(self, data: bytes) -> None:
-        if self._socket is None:
-            raise RuntimeError("tcp socket is closed")
+        self._open_socket()
         self._socket.sendall(data)
 
     def flush(self) -> None:
         return
 
     def readline(self) -> bytes:
-        if self._socket is None:
+        if self._closed:
             return b""
         deadline = time.time() + self._timeout
-        while time.time() < deadline:
-            newline_index = self._buffer.find(b"\n")
-            if newline_index >= 0:
-                line = bytes(self._buffer[: newline_index + 1])
-                del self._buffer[: newline_index + 1]
-                return line
-            remaining = max(0.01, deadline - time.time())
-            self._socket.settimeout(remaining)
-            chunk = self._socket.recv(4096)
-            if not chunk:
-                raise RuntimeError("tcp bridge closed the connection")
-            self._buffer.extend(chunk)
+        try:
+            while time.time() < deadline:
+                newline_index = self._buffer.find(b"\n")
+                if newline_index >= 0:
+                    line = bytes(self._buffer[: newline_index + 1])
+                    del self._buffer[: newline_index + 1]
+                    self._release_socket()
+                    return line
+                remaining = max(0.01, deadline - time.time())
+                self._open_socket()
+                self._socket.settimeout(remaining)
+                chunk = self._socket.recv(4096)
+                if not chunk:
+                    raise RuntimeError("tcp bridge closed the connection")
+                self._buffer.extend(chunk)
+        except Exception:
+            self._release_socket()
+            raise
+        self._release_socket()
         return b""
 
     def reset_input_buffer(self) -> None:
-        self._buffer.clear()
-        if self._socket is None:
-            return
-        try:
-            self._socket.setblocking(False)
-            while True:
-                chunk = self._socket.recv(4096)
-                if not chunk:
-                    break
-        except (BlockingIOError, TimeoutError):
-            pass
-        finally:
-            self._socket.setblocking(True)
-            self._socket.settimeout(self._timeout)
+        self._release_socket()
 
     def reset_output_buffer(self) -> None:
         return
 
     def close(self) -> None:
-        if self._socket is None:
-            return
-        try:
-            self._socket.close()
-        finally:
-            self._socket = None
+        self._closed = True
+        self._release_socket()
 
 
 class VectorProcessor:

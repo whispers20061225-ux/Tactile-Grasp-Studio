@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import {
+  postArmEnable,
+  postArmMoveJoints,
+  postGripperTuningAction,
+  postGripperTuningApply,
+  postGripperTuningSaveDefaults,
+  postPlannerStrategySelect,
+  postStrategySelect,
   postDialogMessage,
   postDialogMode,
   postDialogReplyLanguage,
@@ -16,6 +23,7 @@ import {
 } from "./api";
 import { ControlPage } from "./ControlPage";
 import { LogsPage } from "./LogsPage";
+import { RobotPage } from "./RobotPage";
 import { TactilePage } from "./TactilePage";
 import { VisionPage } from "./VisionPage";
 import {
@@ -341,6 +349,133 @@ function App() {
     }
   }, [pushFrontendEvent, pushToast, setState]);
 
+  const handleArmEnable = useCallback(async (enabled: boolean) => {
+    setBusyAction("arm-enable");
+    try {
+      setState(await postArmEnable(enabled));
+      pushToast("info", "Robot", enabled ? "Arm enable requested." : "Arm disable requested.");
+      pushFrontendEvent("robot", "info", enabled ? "arm enable requested" : "arm disable requested");
+    } catch (error) {
+      pushToast("error", "Robot", getErrorMessage(error, enabled ? "Failed to enable arm." : "Failed to disable arm."));
+      pushFrontendEvent("robot", "error", enabled ? "arm enable failed" : "arm disable failed", {
+        message: getErrorMessage(error, enabled ? "arm enable failed" : "arm disable failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleArmMoveJoints = useCallback(async (
+    jointIds: number[],
+    anglesDeg: number[],
+    durationMs: number,
+    wait: boolean,
+  ) => {
+    setBusyAction("arm-move");
+    try {
+      setState(await postArmMoveJoints(jointIds, anglesDeg, durationMs, wait));
+    } catch (error) {
+      pushToast("error", "Robot", getErrorMessage(error, "Failed to move arm joints."));
+      pushFrontendEvent("robot", "error", "arm move failed", {
+        joint_ids: jointIds,
+        message: getErrorMessage(error, "arm move failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleStrategySelect = useCallback(async (strategyId: string) => {
+    setBusyAction("strategy-select");
+    try {
+      setState(await postStrategySelect(strategyId));
+      pushToast("info", "Robot", `Strategy switched to ${strategyId}.`);
+      pushFrontendEvent("robot", "info", "strategy selected", { strategy_id: strategyId });
+    } catch (error) {
+      pushToast("error", "Robot", getErrorMessage(error, "Failed to change strategy."));
+      pushFrontendEvent("robot", "error", "strategy select failed", {
+        strategy_id: strategyId,
+        message: getErrorMessage(error, "strategy select failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handlePlannerStrategySelect = useCallback(async (strategyId: string) => {
+    setBusyAction("planner-select");
+    try {
+      setState(await postPlannerStrategySelect(strategyId));
+      pushToast("info", "Gripper", `Planner switched to ${strategyId}.`);
+      pushFrontendEvent("gripper", "info", "planner strategy selected", { strategy_id: strategyId });
+    } catch (error) {
+      pushToast("error", "Gripper", getErrorMessage(error, "Failed to change planner strategy."));
+      pushFrontendEvent("gripper", "error", "planner strategy select failed", {
+        strategy_id: strategyId,
+        message: getErrorMessage(error, "planner strategy select failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleGripperTuningApply = useCallback(async (payload: Record<string, unknown>) => {
+    setBusyAction("gripper-tuning");
+    try {
+      setState(await postGripperTuningApply(payload));
+      pushToast("info", "Gripper", "Runtime tuning applied.");
+      pushFrontendEvent("gripper", "info", "gripper tuning applied", payload);
+    } catch (error) {
+      pushToast("error", "Gripper", getErrorMessage(error, "Failed to apply gripper tuning."));
+      pushFrontendEvent("gripper", "error", "gripper tuning apply failed", {
+        message: getErrorMessage(error, "gripper tuning apply failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleGripperTuningAction = useCallback(async (
+    action: string,
+    payload: Record<string, unknown> = {},
+  ) => {
+    setBusyAction("gripper-tuning");
+    try {
+      setState(await postGripperTuningAction(action, payload));
+      if (action !== "refresh") {
+        pushToast("info", "Gripper", `Action ${action} requested.`);
+      }
+      pushFrontendEvent("gripper", "info", "gripper tuning action requested", {
+        action,
+        ...payload,
+      });
+    } catch (error) {
+      pushToast("error", "Gripper", getErrorMessage(error, `Failed to run gripper action ${action}.`));
+      pushFrontendEvent("gripper", "error", "gripper tuning action failed", {
+        action,
+        message: getErrorMessage(error, `gripper tuning action ${action} failed`),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleGripperTuningSaveDefaults = useCallback(async (payload: Record<string, unknown>) => {
+    setBusyAction("gripper-tuning");
+    try {
+      setState(await postGripperTuningSaveDefaults(payload));
+      pushToast("info", "Gripper", "Default tuning saved.");
+      pushFrontendEvent("gripper", "info", "gripper tuning defaults saved", payload);
+    } catch (error) {
+      pushToast("error", "Gripper", getErrorMessage(error, "Failed to save default gripper tuning."));
+      pushFrontendEvent("gripper", "error", "gripper tuning defaults save failed", {
+        message: getErrorMessage(error, "gripper tuning defaults save failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
   const handleClearTactileTare = useCallback(async () => {
     setBusyAction("tactile-clear-tare");
     try {
@@ -403,6 +538,7 @@ function App() {
         </div>
         <nav className="nav-tabs">
           <NavLink to="/control" data-testid="nav-control" className={({ isActive }) => (isActive ? "tab active" : "tab")}>Control</NavLink>
+          <NavLink to="/robot" data-testid="nav-robot" className={({ isActive }) => (isActive ? "tab active" : "tab")}>Robot</NavLink>
           <NavLink to="/vision" data-testid="nav-vision" className={({ isActive }) => (isActive ? "tab active" : "tab")}>Vision</NavLink>
           <NavLink to="/tactile" data-testid="nav-tactile" className={({ isActive }) => (isActive ? "tab active" : "tab")}>Tactile</NavLink>
           <NavLink to="/logs" data-testid="nav-logs" className={({ isActive }) => (isActive ? "tab active" : "tab")}>Logs</NavLink>
@@ -416,7 +552,24 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/control" replace />} />
           <Route path="/control" element={<ControlPage state={state} streams={streams} draft={draft} draftDirty={draftDirty} busyAction={busyAction} chatMessages={dialogMessages} dialogMode={dialogState.mode} dialogReplyLanguage={dialogState.reply_language} dialogStatusLabel={dialogState.status_label || dialogState.status} dialogPendingAutoExecute={Boolean(dialogState.pending_auto_execute)} onTaskChange={updateTask} onTargetChange={updateTarget} onGripperChange={updateGripper} onConstraintsChange={updateConstraints} onDialogSubmit={handleDialogSubmit} onDialogModeChange={handleDialogModeChange} onDialogReplyLanguageChange={handleDialogReplyLanguageChange} onDialogReset={handleDialogReset} onExecute={handleExecute} onReplan={handleReplan} onReturnHome={handleReturnHome} onResetScene={handleResetScene} onOpenDebugViews={handleOpenDebugViews} />} />
-        <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseCandidate={setVisionOverride} />} />
+          <Route
+            path="/robot"
+            element={
+              <RobotPage
+            state={state}
+            busyAction={busyAction}
+            onEnableArm={handleArmEnable}
+            onApplyJoints={handleArmMoveJoints}
+            onApplyGripperTuning={handleGripperTuningApply}
+            onSaveGripperTuningDefaults={handleGripperTuningSaveDefaults}
+              onRunGripperTuningAction={handleGripperTuningAction}
+              onReturnHome={handleReturnHome}
+              onSelectStrategy={handleStrategySelect}
+              onSelectPlannerStrategy={handlePlannerStrategySelect}
+            />
+            }
+          />
+          <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseCandidate={setVisionOverride} />} />
           <Route
             path="/tactile"
             element={

@@ -11,12 +11,15 @@ LeArm 接口：基于 STM32 USB-CDC 的行命令方式。
 
 import logging
 import os
+import socket
+import struct
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 # 运行成脚本时，Python 默认只把当前文件所在目录加入 sys.path，
 # 顶层的 config 包不在搜索路径里，会导致 ModuleNotFoundError。
@@ -33,6 +36,116 @@ except ImportError:
 from config.demo_config import DemoConfig
 
 logger = logging.getLogger(__name__)
+
+
+class TcpLineClient:
+    """Simple line-oriented TCP transport for the shared Windows STM32 bridge."""
+
+    def __init__(self, host: str, port: int, timeout: float) -> None:
+        self._timeout = max(0.05, float(timeout))
+        self._host = self._resolve_host(host)
+        self._port = int(port)
+        self._socket = None
+        self._buffer = bytearray()
+        self._closed = False
+
+    @staticmethod
+    def _resolve_host(host: str) -> str:
+        normalized = str(host or "").strip()
+        if not normalized:
+            raise ValueError("tcp host is empty")
+        try:
+            socket.getaddrinfo(normalized, None)
+            return normalized
+        except socket.gaierror:
+            fallback = TcpLineClient._default_gateway_ip() if normalized == "windows-host" else ""
+            if fallback:
+                return fallback
+            raise
+
+    @staticmethod
+    def _default_gateway_ip() -> str:
+        try:
+            with open("/proc/net/route", "r", encoding="utf-8") as handle:
+                next(handle, None)
+                for line in handle:
+                    fields = line.strip().split()
+                    if len(fields) < 3:
+                        continue
+                    if fields[1] != "00000000":
+                        continue
+                    return socket.inet_ntoa(struct.pack("<L", int(fields[2], 16)))
+        except Exception:
+            return ""
+        return ""
+
+    @property
+    def is_open(self) -> bool:
+        return not self._closed
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self._buffer)
+
+    def _open_socket(self) -> None:
+        if self._closed:
+            raise RuntimeError("tcp socket is closed")
+        if self._socket is not None:
+            return
+        self._socket = socket.create_connection((self._host, self._port), timeout=self._timeout)
+        self._socket.settimeout(self._timeout)
+
+    def _release_socket(self) -> None:
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except Exception:
+                pass
+            finally:
+                self._socket = None
+        self._buffer.clear()
+
+    def write(self, data: bytes) -> None:
+        self._open_socket()
+        self._socket.sendall(data)
+
+    def flush(self) -> None:
+        return
+
+    def readline(self) -> bytes:
+        if self._closed:
+            return b""
+        deadline = time.time() + self._timeout
+        try:
+            while time.time() < deadline:
+                newline_index = self._buffer.find(b"\n")
+                if newline_index >= 0:
+                    line = bytes(self._buffer[: newline_index + 1])
+                    del self._buffer[: newline_index + 1]
+                    self._release_socket()
+                    return line
+                remaining = max(0.01, deadline - time.time())
+                self._open_socket()
+                self._socket.settimeout(remaining)
+                chunk = self._socket.recv(4096)
+                if not chunk:
+                    raise RuntimeError("tcp bridge closed the connection")
+                self._buffer.extend(chunk)
+        except Exception:
+            self._release_socket()
+            raise
+        self._release_socket()
+        return b""
+
+    def reset_input_buffer(self) -> None:
+        self._release_socket()
+
+    def reset_output_buffer(self) -> None:
+        return
+
+    def close(self) -> None:
+        self._closed = True
+        self._release_socket()
 
 
 class ArmConnectionType(Enum):
@@ -140,10 +253,6 @@ class LearmInterface:
         shared_lock=None,
     ) -> bool:
         # 建立串口连接并通过 PING 做连通性测试
-        if serial is None:
-            logger.error("pyserial is not installed")
-            return False
-
         with self._lock:
             try:
                 # 使用共享串口（STM32 同一 CDC 口），不需要额外的端口配置
@@ -182,24 +291,40 @@ class LearmInterface:
                 # 串口参数（波特率/超时）
                 baudrate = int(self.arm_config.get("baud_rate", 115200))
                 timeout = float(self.arm_config.get("timeout", 1.0))
+                normalized_port = str(port).strip()
 
-                self._serial = serial.Serial(
-                    port=port,
-                    baudrate=baudrate,
-                    bytesize=serial.EIGHTBITS,
-                    parity=serial.PARITY_NONE,
-                    stopbits=serial.STOPBITS_ONE,
-                    timeout=timeout,
-                )
-                self._owns_serial = True
+                if normalized_port.startswith(("tcp://", "socket://")):
+                    endpoint = normalized_port
+                    if endpoint.startswith("tcp://"):
+                        endpoint = "socket://" + endpoint[len("tcp://") :]
+                    parsed = urlparse(endpoint)
+                    host = str(parsed.hostname or "").strip()
+                    tcp_port = int(parsed.port or 0)
+                    if not host or tcp_port <= 0:
+                        raise ValueError(f"invalid tcp bridge endpoint: {normalized_port}")
+                    self._serial = TcpLineClient(host, tcp_port, timeout=timeout)
+                    self._owns_serial = True
+                else:
+                    if serial is None:
+                        logger.error("pyserial is not installed")
+                        return False
+                    self._serial = serial.Serial(
+                        port=normalized_port,
+                        baudrate=baudrate,
+                        bytesize=serial.EIGHTBITS,
+                        parity=serial.PARITY_NONE,
+                        stopbits=serial.STOPBITS_ONE,
+                        timeout=timeout,
+                    )
+                    self._owns_serial = True
 
-                # 给 MCU 一点时间重启并准备 CDC
-                time.sleep(self._startup_delay)
-                try:
-                    self._serial.reset_input_buffer()
-                    self._serial.reset_output_buffer()
-                except Exception:
-                    pass
+                    # 仅对原生 CDC 口保留启动等待，避免重复拖慢 TCP bridge 连接。
+                    time.sleep(self._startup_delay)
+                    try:
+                        self._serial.reset_input_buffer()
+                        self._serial.reset_output_buffer()
+                    except Exception:
+                        pass
 
                 # 通过 PING 验证链路
                 if not self._ping_link():
@@ -209,7 +334,7 @@ class LearmInterface:
                 self.status.error = False
                 self.status.error_msg = ""
 
-                logger.info("Connected to LeArm over serial: %s", port)
+                logger.info("Connected to LeArm over transport: %s", normalized_port)
                 return True
 
             except Exception as exc:

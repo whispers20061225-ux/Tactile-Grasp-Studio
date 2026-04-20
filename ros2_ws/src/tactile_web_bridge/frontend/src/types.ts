@@ -191,6 +191,58 @@ export interface DetectionState {
   } | null;
 }
 
+export interface StrategyOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface ArmTelemetry {
+  connected?: boolean;
+  moving?: boolean;
+  error?: boolean;
+  error_message?: string;
+  battery_voltage?: number;
+  joint_positions?: number[];
+  joint_angles?: number[];
+  updated_at?: number;
+  stamp_sec?: number;
+}
+
+export interface GripperTuningState {
+  enabled: boolean;
+  supported: boolean;
+  runtime_ready: boolean;
+  connection_ready: boolean;
+  endpoint: string;
+  mode: string;
+  servo_id: number;
+  tactile_dev_addr: number;
+  close_direction: number;
+  open_limit_raw: number;
+  close_limit_raw: number;
+  commanded_pos_raw: number;
+  filtered_force: number;
+  measured_force_raw: number;
+  tare_force: number;
+  target_force: number;
+  contact_threshold: number;
+  hard_force_limit: number;
+  contact_active: boolean;
+  source_connected: boolean;
+  kp: number;
+  ki: number;
+  kd: number;
+  deadband: number;
+  max_step_per_tick: number;
+  poll_period_ms: number;
+  move_time_ms: number;
+  status_text: string;
+  last_response?: string;
+  last_error?: string;
+  updated_at?: number;
+}
+
 export interface UiState {
   connection: {
     backend_ready: boolean;
@@ -240,6 +292,20 @@ export interface UiState {
       updated_at: number;
     };
     backend_debug: Record<string, unknown>;
+    updated_at: number;
+  };
+  robot: {
+    control_ready: boolean;
+    enable_ready: boolean;
+    move_ready: boolean;
+    return_home_ready: boolean;
+    joint_ids: number[];
+    joint_count: number;
+    gripper_joint_id: number;
+    selected_strategy: string;
+    strategy_options: StrategyOption[];
+    planner_strategy: string;
+    planner_options: StrategyOption[];
     updated_at: number;
   };
   tactile: {
@@ -293,20 +359,35 @@ export interface UiState {
     target_label?: string;
     object_type?: string;
     source?: string;
+    planner_strategy?: string;
+    planner_source?: string;
+    planner_confidence?: number;
+    promote_rollup?: boolean;
+    retrieval?: Record<string, unknown>;
+    retrieval_applied?: boolean;
+    retrieval_neighbor_count?: number;
+    preferred_strategy?: string;
+    preferred_grasp_family?: string;
     kp?: number;
+    ki?: number;
     kd?: number;
     target_force?: number;
+    target_force_range?: number[];
     contact_threshold?: number;
     safety_max?: number;
     confidence?: number;
+    rollup_applied?: boolean;
+    rollup_success_count?: number;
+    rollup_success_rate?: number;
     updated_at?: number;
     raw?: Record<string, unknown>;
   };
+  gripper_tuning?: GripperTuningState;
   health: {
     healthy: boolean;
     issues: Record<string, unknown>[];
     latest: Record<string, unknown>[];
-    arm_state: Record<string, unknown>;
+    arm_state: ArmTelemetry;
     updated_at: number;
   };
   logs: {

@@ -26,12 +26,20 @@ env/
 # Runtime outputs
 logs/
 *.log
+.runtime/
+install/
+log/
+.codex
+tmp_*/
+tmp_*.db
 
 # ROS2 workspace artifacts
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 ros2_ws/.runtime/
+ros2_ws/mobileclip_blt.ts
+ros2_ws/src/tactile_vision/tactile_vision/_codex_patch_probe.txt
 
 # Frontend dependencies / generated outputs
 ros2_ws/src/tactile_web_bridge/frontend/node_modules/
@@ -44,3 +52,9 @@ ros2_ws/src/tactile_web_bridge/frontend/vite.config.d.ts
 # Local model artifacts
 ros2_ws/*.onnx
 ros2_ws/*.pt
+
+# STM32 local IDE/build outputs
+stm32/project2_mirror/Core/Inc/Backup/
+stm32/project2_mirror/Core/Src/Backup/
+stm32/project2_mirror/Debug/
+stm32/project2_mirror/Release/

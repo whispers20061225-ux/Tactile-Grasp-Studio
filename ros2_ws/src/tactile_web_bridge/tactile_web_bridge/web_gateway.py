@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
@@ -50,6 +51,27 @@ from tactile_interfaces.msg import (
     TactileRaw,
 )
 from tactile_interfaces.srv import MoveArmJoints
+
+ROBOT_STRATEGY_OPTIONS = (
+    {
+        "id": "mainline_pick",
+        "label": "Mainline Pick",
+        "description": "Current integrated visual-language perception and grasp execution chain.",
+    },
+)
+
+GRIPPER_PLANNER_OPTIONS = (
+    {
+        "id": "planner_db_only",
+        "label": "DB Only",
+        "description": "Rule and rollup planner using the curated object/material database only.",
+    },
+    {
+        "id": "planner_retrieval_aug",
+        "label": "Retrieval Augmented",
+        "description": "DB prior plus nearest successful grasp trials for parameter refinement.",
+    },
+)
 
 
 def _normalized_secret(value: Any) -> str:
@@ -231,6 +253,52 @@ def _json_compatible(value: Any) -> Any:
 
 def _now_sec() -> float:
     return time.time()
+
+
+def _parse_socket_endpoint(endpoint: str) -> tuple[str, int]:
+    parts = urlsplit(str(endpoint or "").strip())
+    scheme = str(parts.scheme or "").strip().lower()
+    if scheme not in {"tcp", "socket"}:
+        raise ValueError(f"unsupported gripper tuning endpoint: {endpoint}")
+    host = str(parts.hostname or "").strip() or "127.0.0.1"
+    port = int(parts.port or 0)
+    if port <= 0:
+        raise ValueError(f"invalid gripper tuning endpoint port: {endpoint}")
+    return host, port
+
+
+def _parse_gripper_status_line(line: str) -> dict[str, Any]:
+    text = str(line or "").strip()
+    if not text.startswith("GSTAT "):
+        raise ValueError(f"unexpected GSTAT payload: {text or '<empty>'}")
+
+    fields: dict[str, str] = {}
+    for token in text.split()[1:]:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        fields[str(key).strip()] = str(value).strip()
+
+    return {
+        "mode": str(fields.get("mode", "") or "idle"),
+        "servo_id": int(fields.get("servo", "0") or 0),
+        "tactile_dev_addr": int(fields.get("dev", "0") or 0),
+        "close_direction": int(fields.get("dir", "1") or 1),
+        "commanded_pos_raw": int(fields.get("pos", "0") or 0),
+        "filtered_force": float(fields.get("force", "0") or 0.0),
+        "measured_force_raw": float(fields.get("raw", "0") or 0.0),
+        "tare_force": float(fields.get("tare", "0") or 0.0),
+        "target_force": float(fields.get("target", "0") or 0.0),
+        "contact_active": bool(int(fields.get("contact", "0") or 0)),
+        "source_connected": bool(int(fields.get("src", "0") or 0)),
+        "kp": float(fields.get("kp", "0") or 0.0),
+        "ki": float(fields.get("ki", "0") or 0.0),
+        "kd": float(fields.get("kd", "0") or 0.0),
+        "deadband": float(fields.get("db", "0") or 0.0),
+        "max_step_per_tick": float(fields.get("step", "0") or 0.0),
+        "poll_period_ms": int(fields.get("period", "0") or 0),
+        "status_text": str(fields.get("status", "") or "").strip(),
+    }
 
 
 def _msg_stamp_sec(msg: Any) -> float:
@@ -1442,6 +1510,7 @@ class TactileWebGateway(Node):
         self.declare_parameter("tactile_freeze_warn_sec", 1.4)
         self.declare_parameter("tactile_freeze_force_threshold", 1.0)
         self.declare_parameter("gripper_profile_topic", "/control/gripper/profile_json")
+        self.declare_parameter("gripper_planner_strategy_topic", "/control/gripper/planner_strategy")
         self.declare_parameter("health_topic", "/system/health")
         self.declare_parameter("arm_state_topic", "/arm/state")
         self.declare_parameter("execute_task_action", "/task/execute_task")
@@ -1473,6 +1542,24 @@ class TactileWebGateway(Node):
             "return_home_joint_angles_deg",
             [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936],
         )
+        self.declare_parameter("gripper_joint_id", 6)
+        self.declare_parameter("gripper_tuning_endpoint", "tcp://172.17.192.1:19024")
+        self.declare_parameter("gripper_tuning_timeout_sec", 1.5)
+        self.declare_parameter("gripper_tuning_status_cache_sec", 0.75)
+        self.declare_parameter("gripper_tuning_default_tactile_addr", 1)
+        self.declare_parameter("gripper_tuning_default_open_limit_raw", 900)
+        self.declare_parameter("gripper_tuning_default_close_limit_raw", 3100)
+        self.declare_parameter("gripper_tuning_default_contact_threshold", 4.0)
+        self.declare_parameter("gripper_tuning_default_hard_force_limit", 18.0)
+        self.declare_parameter("gripper_tuning_default_target_force", 8.0)
+        self.declare_parameter("gripper_tuning_default_kp", 0.8)
+        self.declare_parameter("gripper_tuning_default_ki", 0.08)
+        self.declare_parameter("gripper_tuning_default_kd", 0.0)
+        self.declare_parameter("gripper_tuning_default_deadband", 2.0)
+        self.declare_parameter("gripper_tuning_default_max_step", 6.0)
+        self.declare_parameter("gripper_tuning_default_poll_period_ms", 40)
+        self.declare_parameter("gripper_tuning_default_move_time_ms", 100)
+        self.declare_parameter("gripper_tuning_defaults_path", "")
         self.declare_parameter("return_home_duration_ms", 3500)
         self.declare_parameter("return_home_request_timeout_ms", 12000)
         self.declare_parameter("return_home_wait_for_completion", True)
@@ -1546,6 +1633,9 @@ class TactileWebGateway(Node):
             0.0, float(self.get_parameter("tactile_freeze_force_threshold").value)
         )
         self.gripper_profile_topic = str(self.get_parameter("gripper_profile_topic").value)
+        self.gripper_planner_strategy_topic = str(
+            self.get_parameter("gripper_planner_strategy_topic").value
+        )
         self.health_topic = str(self.get_parameter("health_topic").value)
         self.arm_state_topic = str(self.get_parameter("arm_state_topic").value)
         self.execute_task_action = str(self.get_parameter("execute_task_action").value)
@@ -1616,6 +1706,56 @@ class TactileWebGateway(Node):
             float(item)
             for item in list(self.get_parameter("return_home_joint_angles_deg").value)
         ]
+        self.gripper_joint_id = max(1, int(self.get_parameter("gripper_joint_id").value))
+        self.gripper_tuning_endpoint = str(self.get_parameter("gripper_tuning_endpoint").value or "").strip()
+        self.gripper_tuning_timeout_sec = max(
+            0.2, float(self.get_parameter("gripper_tuning_timeout_sec").value)
+        )
+        self.gripper_tuning_status_cache_sec = max(
+            0.1, float(self.get_parameter("gripper_tuning_status_cache_sec").value)
+        )
+        self.gripper_tuning_default_tactile_addr = max(
+            1, int(self.get_parameter("gripper_tuning_default_tactile_addr").value)
+        )
+        self.gripper_tuning_default_open_limit_raw = max(
+            0, int(self.get_parameter("gripper_tuning_default_open_limit_raw").value)
+        )
+        self.gripper_tuning_default_close_limit_raw = max(
+            0, int(self.get_parameter("gripper_tuning_default_close_limit_raw").value)
+        )
+        self.gripper_tuning_default_contact_threshold = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_contact_threshold").value)
+        )
+        self.gripper_tuning_default_hard_force_limit = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_hard_force_limit").value)
+        )
+        self.gripper_tuning_default_target_force = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_target_force").value)
+        )
+        self.gripper_tuning_default_kp = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_kp").value)
+        )
+        self.gripper_tuning_default_ki = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_ki").value)
+        )
+        self.gripper_tuning_default_kd = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_kd").value)
+        )
+        self.gripper_tuning_default_deadband = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_deadband").value)
+        )
+        self.gripper_tuning_default_max_step = max(
+            0.0, float(self.get_parameter("gripper_tuning_default_max_step").value)
+        )
+        self.gripper_tuning_default_poll_period_ms = max(
+            1, int(self.get_parameter("gripper_tuning_default_poll_period_ms").value)
+        )
+        self.gripper_tuning_default_move_time_ms = max(
+            1, int(self.get_parameter("gripper_tuning_default_move_time_ms").value)
+        )
+        self.gripper_tuning_defaults_path_param = str(
+            self.get_parameter("gripper_tuning_defaults_path").value or ""
+        ).strip()
         self.return_home_duration_ms = max(
             500, int(self.get_parameter("return_home_duration_ms").value)
         )
@@ -1712,6 +1852,9 @@ class TactileWebGateway(Node):
         )
 
         self.prompt_pub = self.create_publisher(String, self.prompt_topic, qos_reliable)
+        self.gripper_planner_strategy_pub = self.create_publisher(
+            String, self.gripper_planner_strategy_topic, qos_latched
+        )
         self.semantic_override_pub = self.create_publisher(
             SemanticTask, self.semantic_task_topic, qos_latched
         )
@@ -1816,7 +1959,42 @@ class TactileWebGateway(Node):
         self._tactile_raw_static_repeats = 0
         self._tactile_freeze_warning = False
         self._gripper_profile: dict[str, Any] = {"updated_at": 0.0}
+        self._gripper_tuning: dict[str, Any] = {
+            "enabled": bool(self.gripper_tuning_endpoint),
+            "supported": False,
+            "runtime_ready": False,
+            "connection_ready": False,
+            "endpoint": self.gripper_tuning_endpoint,
+            "mode": "idle",
+            "servo_id": int(self.gripper_joint_id),
+            "tactile_dev_addr": int(self.gripper_tuning_default_tactile_addr),
+            "close_direction": 1,
+            "open_limit_raw": int(self.gripper_tuning_default_open_limit_raw),
+            "close_limit_raw": int(self.gripper_tuning_default_close_limit_raw),
+            "commanded_pos_raw": 0,
+            "filtered_force": 0.0,
+            "measured_force_raw": 0.0,
+            "tare_force": 0.0,
+            "target_force": float(self.gripper_tuning_default_target_force),
+            "contact_threshold": float(self.gripper_tuning_default_contact_threshold),
+            "hard_force_limit": float(self.gripper_tuning_default_hard_force_limit),
+            "contact_active": False,
+            "source_connected": False,
+            "kp": float(self.gripper_tuning_default_kp),
+            "ki": float(self.gripper_tuning_default_ki),
+            "kd": float(self.gripper_tuning_default_kd),
+            "deadband": float(self.gripper_tuning_default_deadband),
+            "max_step_per_tick": float(self.gripper_tuning_default_max_step),
+            "poll_period_ms": int(self.gripper_tuning_default_poll_period_ms),
+            "move_time_ms": int(self.gripper_tuning_default_move_time_ms),
+            "status_text": "",
+            "last_response": "",
+            "last_error": "",
+            "updated_at": 0.0,
+        }
         self._arm_state: dict[str, Any] = {"updated_at": 0.0}
+        self._selected_strategy = "mainline_pick"
+        self._planner_strategy = "planner_db_only"
         self._health_by_node: dict[str, dict[str, Any]] = {}
         self._scene_target_pose: dict[str, Any] = {
             "model_name": self.scene_target_model_name,
@@ -1828,6 +2006,11 @@ class TactileWebGateway(Node):
         self._ws_root = Path(__file__).resolve().parents[3]
         self._runtime_log_dir = self._ws_root / ".runtime" / "programme-ui"
         self._runtime_log_dir.mkdir(parents=True, exist_ok=True)
+        self.gripper_tuning_defaults_path = (
+            Path(self.gripper_tuning_defaults_path_param).expanduser()
+            if self.gripper_tuning_defaults_path_param
+            else (self._runtime_log_dir / "gripper-tuning-defaults.json")
+        )
         self._debug_gazebo_log = self._runtime_log_dir / "debug-gazebo-gui.log"
         self._debug_rviz_log = self._runtime_log_dir / "debug-rviz.log"
         self._dialog_message_id = 0
@@ -1843,6 +2026,11 @@ class TactileWebGateway(Node):
             "updated_at": 0.0,
         }
         self._dialog_http = requests.Session()
+        self._gripper_tuning_defaults = self._load_gripper_tuning_defaults()
+        self._gripper_tuning_defaults_pending_apply = bool(self._gripper_tuning_defaults)
+        if self._gripper_tuning_defaults:
+            self._gripper_tuning.update(self._gripper_tuning_defaults)
+        self._publish_gripper_planner_strategy()
 
         self.rgb_stream = MjpegFrameBuffer()
         self.detection_overlay_stream = MjpegFrameBuffer()
@@ -4393,6 +4581,468 @@ class TactileWebGateway(Node):
             return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
 
+    def _client_is_ready(self, client: Any) -> bool:
+        try:
+            return bool(client.service_is_ready())
+        except Exception:
+            return False
+
+    def _robot_joint_ids(self, arm_state: dict[str, Any]) -> list[int]:
+        joint_ids: list[int] = []
+        seen: set[int] = set()
+        for item in list(self.return_home_joint_ids):
+            try:
+                joint_id = int(item)
+            except (TypeError, ValueError):
+                continue
+            if joint_id <= 0 or joint_id in seen:
+                continue
+            seen.add(joint_id)
+            joint_ids.append(joint_id)
+        if joint_ids:
+            return joint_ids
+        joint_count = len(list(arm_state.get("joint_angles", []) or []))
+        joint_count = max(joint_count, self.gripper_joint_id, 6)
+        return list(range(1, joint_count + 1))
+
+    def _build_robot_state(
+        self,
+        arm_state: dict[str, Any],
+        *,
+        selected_strategy: str,
+        planner_strategy: str,
+    ) -> dict[str, Any]:
+        joint_ids = self._robot_joint_ids(arm_state)
+        gripper_joint_id = self.gripper_joint_id
+        if joint_ids and gripper_joint_id not in joint_ids:
+            gripper_joint_id = joint_ids[-1]
+        return {
+            "control_ready": bool(
+                self._client_is_ready(self.control_arm_enable_client)
+                and self._client_is_ready(self.control_arm_move_joints_client)
+            ),
+            "enable_ready": bool(self._client_is_ready(self.control_arm_enable_client)),
+            "move_ready": bool(self._client_is_ready(self.control_arm_move_joints_client)),
+            "return_home_ready": bool(self._client_is_ready(self.return_home_client)),
+            "joint_ids": joint_ids,
+            "joint_count": len(joint_ids),
+            "gripper_joint_id": int(gripper_joint_id),
+            "selected_strategy": str(selected_strategy or "mainline_pick"),
+            "strategy_options": [dict(item) for item in ROBOT_STRATEGY_OPTIONS],
+            "planner_strategy": str(planner_strategy or "planner_db_only"),
+            "planner_options": [dict(item) for item in GRIPPER_PLANNER_OPTIONS],
+            "updated_at": float(arm_state.get("updated_at", 0.0) or 0.0),
+        }
+
+    def _normalize_gripper_tuning_defaults(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "servo_id": max(1, int(payload.get("servo_id", self.gripper_joint_id) or self.gripper_joint_id)),
+            "tactile_dev_addr": max(
+                1,
+                int(
+                    payload.get(
+                        "tactile_dev_addr",
+                        self.gripper_tuning_default_tactile_addr,
+                    )
+                    or self.gripper_tuning_default_tactile_addr
+                ),
+            ),
+            "close_direction": -1 if int(payload.get("close_direction", 1) or 1) < 0 else 1,
+            "open_limit_raw": max(
+                0,
+                int(
+                    payload.get(
+                        "open_limit_raw",
+                        self.gripper_tuning_default_open_limit_raw,
+                    )
+                    or self.gripper_tuning_default_open_limit_raw
+                ),
+            ),
+            "close_limit_raw": max(
+                0,
+                int(
+                    payload.get(
+                        "close_limit_raw",
+                        self.gripper_tuning_default_close_limit_raw,
+                    )
+                    or self.gripper_tuning_default_close_limit_raw
+                ),
+            ),
+            "kp": max(0.0, float(payload.get("kp", self.gripper_tuning_default_kp) or 0.0)),
+            "ki": max(0.0, float(payload.get("ki", self.gripper_tuning_default_ki) or 0.0)),
+            "kd": max(0.0, float(payload.get("kd", self.gripper_tuning_default_kd) or 0.0)),
+            "contact_threshold": max(
+                0.0,
+                float(
+                    payload.get(
+                        "contact_threshold",
+                        self.gripper_tuning_default_contact_threshold,
+                    )
+                    or 0.0
+                ),
+            ),
+            "hard_force_limit": max(
+                0.0,
+                float(
+                    payload.get(
+                        "hard_force_limit",
+                        self.gripper_tuning_default_hard_force_limit,
+                    )
+                    or 0.0
+                ),
+            ),
+            "deadband": max(
+                0.0,
+                float(payload.get("deadband", self.gripper_tuning_default_deadband) or 0.0),
+            ),
+            "max_step_per_tick": max(
+                0.0,
+                float(payload.get("max_step_per_tick", self.gripper_tuning_default_max_step) or 0.0),
+            ),
+            "poll_period_ms": max(
+                1,
+                int(
+                    payload.get(
+                        "poll_period_ms",
+                        self.gripper_tuning_default_poll_period_ms,
+                    )
+                    or self.gripper_tuning_default_poll_period_ms
+                ),
+            ),
+            "move_time_ms": max(
+                1,
+                int(
+                    payload.get(
+                        "move_time_ms",
+                        self.gripper_tuning_default_move_time_ms,
+                    )
+                    or self.gripper_tuning_default_move_time_ms
+                ),
+            ),
+        }
+
+    def _load_gripper_tuning_defaults(self) -> dict[str, Any]:
+        try:
+            if not self.gripper_tuning_defaults_path.is_file():
+                return {}
+            with open(self.gripper_tuning_defaults_path, "r", encoding="utf-8") as handle:
+                parsed = json.load(handle)
+        except Exception:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return self._normalize_gripper_tuning_defaults(parsed)
+
+    def _save_gripper_tuning_defaults_file(self, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_gripper_tuning_defaults(payload)
+        self.gripper_tuning_defaults_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.gripper_tuning_defaults_path, "w", encoding="utf-8") as handle:
+            json.dump(normalized, handle, ensure_ascii=True, indent=2, sort_keys=True)
+        return normalized
+
+    def _build_gripper_tuning_commands(
+        self,
+        payload: dict[str, Any],
+        current: dict[str, Any],
+    ) -> tuple[list[str], dict[str, Any]]:
+        commands: list[str] = []
+        updated_fields: dict[str, Any] = {}
+
+        if "servo_id" in payload:
+            servo_id = max(1, int(payload.get("servo_id") or current.get("servo_id", self.gripper_joint_id)))
+            commands.append(f"GID {servo_id}")
+            updated_fields["servo_id"] = servo_id
+        if "tactile_dev_addr" in payload:
+            dev_addr = max(1, int(payload.get("tactile_dev_addr") or current.get("tactile_dev_addr", 1)))
+            commands.append(f"GTACT {dev_addr}")
+            updated_fields["tactile_dev_addr"] = dev_addr
+        if "close_direction" in payload:
+            direction = -1 if int(payload.get("close_direction") or 1) < 0 else 1
+            commands.append(f"GDIR {direction}")
+            updated_fields["close_direction"] = direction
+        if "open_limit_raw" in payload or "close_limit_raw" in payload:
+            open_limit = max(0, int(payload.get("open_limit_raw", current.get("open_limit_raw", 0)) or 0))
+            close_limit = max(0, int(payload.get("close_limit_raw", current.get("close_limit_raw", 0)) or 0))
+            commands.append(f"GLIM {open_limit} {close_limit}")
+            updated_fields["open_limit_raw"] = open_limit
+            updated_fields["close_limit_raw"] = close_limit
+        if any(key in payload for key in ("kp", "ki", "kd")):
+            kp = max(0.0, float(payload.get("kp", current.get("kp", 0.0)) or 0.0))
+            ki = max(0.0, float(payload.get("ki", current.get("ki", 0.0)) or 0.0))
+            kd = max(0.0, float(payload.get("kd", current.get("kd", 0.0)) or 0.0))
+            commands.append(f"GPID {kp:.6f} {ki:.6f} {kd:.6f}")
+            updated_fields.update({"kp": kp, "ki": ki, "kd": kd})
+        if "contact_threshold" in payload:
+            value = max(0.0, float(payload.get("contact_threshold") or current.get("contact_threshold", 0.0)))
+            commands.append(f"GCONTACT {value:.6f}")
+            updated_fields["contact_threshold"] = value
+        if "hard_force_limit" in payload:
+            value = max(0.0, float(payload.get("hard_force_limit") or current.get("hard_force_limit", 0.0)))
+            commands.append(f"GSAFE {value:.6f}")
+            updated_fields["hard_force_limit"] = value
+        if "deadband" in payload:
+            value = max(0.0, float(payload.get("deadband") or current.get("deadband", 0.0)))
+            commands.append(f"GDEADBAND {value:.6f}")
+            updated_fields["deadband"] = value
+        if "max_step_per_tick" in payload:
+            value = max(0.0, float(payload.get("max_step_per_tick") or current.get("max_step_per_tick", 0.0)))
+            commands.append(f"GSTEP {value:.6f}")
+            updated_fields["max_step_per_tick"] = value
+        if "poll_period_ms" in payload:
+            value = max(1, int(payload.get("poll_period_ms") or current.get("poll_period_ms", 1)))
+            commands.append(f"GPOLL {value}")
+            updated_fields["poll_period_ms"] = value
+        if "move_time_ms" in payload:
+            value = max(1, int(payload.get("move_time_ms") or current.get("move_time_ms", 1)))
+            commands.append(f"GMOVE {value}")
+            updated_fields["move_time_ms"] = value
+
+        return commands, updated_fields
+
+    def _execute_gripper_tuning_commands(self, commands: list[str]) -> list[str]:
+        responses: list[str] = []
+        for command in commands:
+            response = self._send_gripper_tuning_line(command)
+            responses.append(response)
+            if response.startswith("ERR") or response.startswith("FAIL"):
+                raise RuntimeError(response)
+        return responses
+
+    def _send_gripper_tuning_line(self, command: str, *, timeout_sec: Optional[float] = None) -> str:
+        if not self.gripper_tuning_endpoint:
+            raise RuntimeError("gripper tuning endpoint is not configured")
+        host, port = _parse_socket_endpoint(self.gripper_tuning_endpoint)
+        payload = str(command or "").strip()
+        if not payload:
+            raise ValueError("gripper tuning command is empty")
+        timeout = max(0.2, float(timeout_sec or self.gripper_tuning_timeout_sec))
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall((payload + "\n").encode("utf-8"))
+            data = bytearray()
+            while not data.endswith(b"\n"):
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data.extend(chunk)
+        return data.decode("utf-8", errors="replace").strip()
+
+    def _refresh_gripper_tuning_status(self, *, force: bool = False) -> dict[str, Any]:
+        now_sec = _now_sec()
+        with self._lock:
+            current = copy.deepcopy(self._gripper_tuning)
+        updated_at = float(current.get("updated_at", 0.0) or 0.0)
+        if not force and updated_at > 0.0 and (now_sec - updated_at) <= self.gripper_tuning_status_cache_sec:
+            return current
+
+        if not self.gripper_tuning_endpoint:
+            current.update(
+                {
+                    "enabled": False,
+                    "connection_ready": False,
+                    "runtime_ready": False,
+                    "supported": False,
+                    "status_text": "gripper tuning endpoint not configured",
+                    "last_error": "gripper tuning endpoint not configured",
+                    "updated_at": now_sec,
+                }
+            )
+            with self._lock:
+                self._gripper_tuning = current
+            return copy.deepcopy(current)
+
+        try:
+            response = self._send_gripper_tuning_line("GSTAT")
+        except Exception as exc:  # noqa: BLE001
+            current.update(
+                {
+                    "enabled": True,
+                    "endpoint": self.gripper_tuning_endpoint,
+                    "connection_ready": False,
+                    "runtime_ready": False,
+                    "status_text": "bridge unavailable",
+                    "last_error": str(exc),
+                    "updated_at": now_sec,
+                }
+            )
+            with self._lock:
+                self._gripper_tuning = current
+            return copy.deepcopy(current)
+
+        current.update(
+            {
+                "enabled": True,
+                "endpoint": self.gripper_tuning_endpoint,
+                "connection_ready": True,
+                "last_response": response,
+                "updated_at": now_sec,
+            }
+        )
+        if response.startswith("GSTAT "):
+            try:
+                current.update(_parse_gripper_status_line(response))
+                current["supported"] = True
+                current["runtime_ready"] = True
+                current["last_error"] = ""
+            except Exception as exc:  # noqa: BLE001
+                current["runtime_ready"] = False
+                current["supported"] = False
+                current["status_text"] = "gstat parse failed"
+                current["last_error"] = str(exc)
+        else:
+            current["runtime_ready"] = False
+            current["supported"] = "unknown_cmd" not in response
+            current["status_text"] = "firmware reply mismatch"
+            current["last_error"] = response or "unexpected gripper runtime reply"
+
+        if bool(current.get("runtime_ready")):
+            with self._lock:
+                defaults_pending = bool(self._gripper_tuning_defaults_pending_apply)
+                startup_defaults = copy.deepcopy(self._gripper_tuning_defaults)
+            if defaults_pending and startup_defaults:
+                try:
+                    commands, updated_fields = self._build_gripper_tuning_commands(startup_defaults, current)
+                    if commands:
+                        self._execute_gripper_tuning_commands(commands)
+                        response = self._send_gripper_tuning_line("GSTAT")
+                        current.update(_parse_gripper_status_line(response))
+                        current.update(updated_fields)
+                        current["last_response"] = response
+                        current["last_error"] = ""
+                    with self._lock:
+                        self._gripper_tuning_defaults_pending_apply = False
+                        self._gripper_tuning.update(updated_fields)
+                except Exception as exc:  # noqa: BLE001
+                    current["last_error"] = f"startup defaults apply failed: {exc}"
+
+        with self._lock:
+            self._gripper_tuning = current
+        return copy.deepcopy(current)
+
+    def apply_gripper_tuning(self, payload: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        current = self._refresh_gripper_tuning_status(force=True)
+        commands, updated_fields = self._build_gripper_tuning_commands(payload, current)
+        if not commands:
+            raise ValueError("no gripper tuning fields provided")
+
+        try:
+            responses = self._execute_gripper_tuning_commands(commands)
+        except Exception as exc:  # noqa: BLE001
+            self._record_event(
+                "gripper",
+                "error",
+                f"gripper tuning apply failed: {exc}",
+                data={"commands": commands},
+                feedback=True,
+            )
+            self._refresh_gripper_tuning_status(force=True)
+            return False, str(exc), self.build_state()
+
+        with self._lock:
+            self._gripper_tuning.update(updated_fields)
+        self._refresh_gripper_tuning_status(force=True)
+        self._record_event(
+            "gripper",
+            "info",
+            "gripper tuning applied",
+            data={"commands": commands, "responses": responses},
+            feedback=False,
+        )
+        return True, "gripper tuning applied", self.build_state()
+
+    def save_gripper_tuning_defaults(self, payload: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        try:
+            normalized = self._save_gripper_tuning_defaults_file(payload)
+        except Exception as exc:  # noqa: BLE001
+            self._record_event(
+                "gripper",
+                "error",
+                f"gripper defaults save failed: {exc}",
+                feedback=True,
+            )
+            return False, str(exc), self.build_state()
+
+        with self._lock:
+            self._gripper_tuning_defaults = normalized
+            self._gripper_tuning_defaults_pending_apply = True
+            self._gripper_tuning.update(normalized)
+            self._state_version += 1
+        self._record_event(
+            "gripper",
+            "info",
+            "gripper tuning defaults saved",
+            data={"path": str(self.gripper_tuning_defaults_path)},
+            feedback=False,
+        )
+        return True, "gripper tuning defaults saved", self.build_state()
+
+    def run_gripper_tuning_action(self, action: str, payload: dict[str, Any]) -> tuple[bool, str, dict[str, Any]]:
+        normalized = str(action or "").strip().lower()
+        if not normalized:
+            raise ValueError("action is required")
+
+        current = self._refresh_gripper_tuning_status(force=normalized == "refresh")
+        if normalized == "refresh":
+            return True, "gripper tuning refreshed", self.build_state()
+
+        if normalized == "tare":
+            samples = max(1, int(payload.get("samples", 5) or 5))
+            command = f"GTARE {samples}"
+        elif normalized == "sync":
+            command = "GSYNC"
+        elif normalized == "hold":
+            command = "GHOLD"
+        elif normalized == "stop":
+            command = "GSTOP"
+        elif normalized in {"hybrid_hold", "hybrid"}:
+            target_force = max(0.0, float(payload.get("target_force", current.get("target_force", 0.0)) or 0.0))
+            command = f"GHYBRID {target_force:.6f}"
+            with self._lock:
+                self._gripper_tuning["target_force"] = target_force
+        elif normalized == "force_pi":
+            target_force = max(0.0, float(payload.get("target_force", current.get("target_force", 0.0)) or 0.0))
+            command = f"GFORCE {target_force:.6f}"
+            with self._lock:
+                self._gripper_tuning["target_force"] = target_force
+        elif normalized == "set_position":
+            raw_pos = max(0, int(payload.get("raw_pos") or 0))
+            move_time_ms = max(
+                1,
+                int(payload.get("move_time_ms", current.get("move_time_ms", self.gripper_tuning_default_move_time_ms)) or 1),
+            )
+            command = f"GSETPOS {raw_pos} {move_time_ms}"
+            with self._lock:
+                self._gripper_tuning["move_time_ms"] = move_time_ms
+        else:
+            raise ValueError(f"unsupported gripper tuning action: {normalized}")
+
+        try:
+            response = self._send_gripper_tuning_line(command)
+            if normalized in {"hybrid_hold", "hybrid"} and "unknown_cmd" in response.lower():
+                raise RuntimeError("GHYBRID is not available on the current STM32 firmware; reflash the updated project2 build")
+            if response.startswith("ERR") or response.startswith("FAIL"):
+                raise RuntimeError(response)
+        except Exception as exc:  # noqa: BLE001
+            self._record_event(
+                "gripper",
+                "error",
+                f"gripper action failed: {exc}",
+                data={"action": normalized},
+                feedback=True,
+            )
+            self._refresh_gripper_tuning_status(force=True)
+            return False, str(exc), self.build_state()
+
+        self._refresh_gripper_tuning_status(force=True)
+        self._record_event(
+            "gripper",
+            "info",
+            f"gripper action requested: {normalized}",
+            data={"action": normalized, "command": command},
+            feedback=False,
+        )
+        return True, response, self.build_state()
+
     def _execution_backend_ready(self) -> bool:
         try:
             action_ready = bool(self.execute_task_client.server_is_ready())
@@ -4609,6 +5259,118 @@ class TactileWebGateway(Node):
         if not ok or result is None:
             return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
+
+    def set_arm_enabled(self, enabled: bool) -> tuple[bool, str, dict[str, Any]]:
+        ok, message = self._call_set_bool(
+            self.control_arm_enable_client,
+            enabled,
+            timeout_sec=8.0 if enabled else 4.0,
+        )
+        normalized_message = str(message or ("arm enabled" if enabled else "arm disabled"))
+        self._record_event(
+            "robot",
+            "info" if ok else "error",
+            normalized_message if ok else f"arm {'enable' if enabled else 'disable'} failed: {normalized_message}",
+            data={"enabled": bool(enabled)},
+            feedback=not ok,
+        )
+        return ok, normalized_message, self.build_state()
+
+    def move_arm_joints(
+        self,
+        joint_ids: list[int],
+        angles_deg: list[float],
+        *,
+        duration_ms: int,
+        wait: bool,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        normalized_joint_ids = [int(item) for item in list(joint_ids)]
+        normalized_angles_deg = [float(item) for item in list(angles_deg)]
+        if not normalized_joint_ids:
+            raise ValueError("joint_ids is required")
+        if len(normalized_joint_ids) != len(normalized_angles_deg):
+            raise ValueError("joint_ids and angles_deg size mismatch")
+        if len(set(normalized_joint_ids)) != len(normalized_joint_ids):
+            raise ValueError("joint_ids contains duplicates")
+        for joint_id in normalized_joint_ids:
+            if joint_id <= 0:
+                raise ValueError("joint_ids must be positive integers")
+        timeout_sec = max(4.0, (max(250, int(duration_ms)) / 1000.0) + (2.0 if wait else 1.0))
+        ok, message = self._call_move_joints(
+            normalized_joint_ids,
+            normalized_angles_deg,
+            duration_ms=max(250, int(duration_ms)),
+            wait=bool(wait),
+            timeout_sec=timeout_sec,
+        )
+        normalized_message = str(message or "move_joints completed")
+        self._record_event(
+            "robot",
+            "info" if ok else "error",
+            normalized_message if ok else f"arm move failed: {normalized_message}",
+            data={
+                "joint_ids": normalized_joint_ids,
+                "angles_deg": normalized_angles_deg,
+                "duration_ms": max(250, int(duration_ms)),
+                "wait": bool(wait),
+            },
+            feedback=not ok,
+        )
+        return ok, normalized_message, self.build_state()
+
+    def move_gripper(
+        self,
+        angle_deg: float,
+        *,
+        duration_ms: int,
+        wait: bool,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        return self.move_arm_joints(
+            [int(self.gripper_joint_id)],
+            [float(angle_deg)],
+            duration_ms=duration_ms,
+            wait=wait,
+        )
+
+    def set_selected_strategy(self, strategy_id: str) -> tuple[bool, str, dict[str, Any]]:
+        normalized = str(strategy_id or "").strip()
+        valid_ids = {str(item["id"]) for item in ROBOT_STRATEGY_OPTIONS}
+        if normalized not in valid_ids:
+            raise ValueError(f"unknown strategy_id: {normalized or '<empty>'}")
+        with self._lock:
+            self._selected_strategy = normalized
+            self._state_version += 1
+        self._record_event(
+            "robot",
+            "info",
+            f"strategy selected: {normalized}",
+            data={"strategy_id": normalized},
+            feedback=False,
+        )
+        return True, "strategy selected", self.build_state()
+
+    def _publish_gripper_planner_strategy(self) -> None:
+        message = String()
+        message.data = str(self._planner_strategy or "planner_db_only")
+        self.gripper_planner_strategy_pub.publish(message)
+
+    def set_planner_strategy(self, strategy_id: str) -> tuple[bool, str, dict[str, Any]]:
+        normalized = str(strategy_id or "").strip()
+        valid_ids = {str(item["id"]) for item in GRIPPER_PLANNER_OPTIONS}
+        if normalized not in valid_ids:
+            raise ValueError(f"unknown planner strategy_id: {normalized or '<empty>'}")
+        with self._lock:
+            self._planner_strategy = normalized
+            self._state_version += 1
+        self._publish_gripper_planner_strategy()
+        self._record_event(
+            "gripper",
+            "info",
+            f"planner strategy selected: {normalized}",
+            data={"planner_strategy": normalized},
+            feedback=False,
+        )
+        return True, "planner strategy selected", self.build_state()
 
     def _request_return_home_motion(
         self,
@@ -5032,6 +5794,8 @@ class TactileWebGateway(Node):
             arm_state = copy.deepcopy(self._arm_state)
             intervention = copy.deepcopy(self._intervention)
             pending_execute = copy.deepcopy(self._pending_execute)
+            selected_strategy = str(self._selected_strategy or "mainline_pick")
+            planner_strategy = str(self._planner_strategy or "planner_db_only")
             health_by_node = copy.deepcopy(self._health_by_node)
             dialog = copy.deepcopy(self._dialog)
             scene_target_pose = copy.deepcopy(self._scene_target_pose)
@@ -5100,6 +5864,12 @@ class TactileWebGateway(Node):
             pick_status=pick_status,
         )
         backend_ready = self._execution_backend_ready()
+        robot_state = self._build_robot_state(
+            arm_state,
+            selected_strategy=selected_strategy,
+            planner_strategy=planner_strategy,
+        )
+        gripper_tuning = self._refresh_gripper_tuning_status(force=False)
         return _json_compatible(
             {
                 "connection": {
@@ -5151,7 +5921,9 @@ class TactileWebGateway(Node):
                     "updated_at": execution_updated_at,
                 },
                 "tactile": tactile,
+                "robot": robot_state,
                 "gripper_profile": gripper_profile,
+                "gripper_tuning": gripper_tuning,
                 "health": {
                     "healthy": not health_issues,
                     "issues": health_issues,
@@ -5362,6 +6134,118 @@ def create_app(bridge: TactileWebGateway) -> Any:
     @app.post("/api/execution/reset-scene")
     async def post_reset_scene() -> JSONResponse:
         ok, message, state = bridge.reset_scene()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/arm/enable")
+    async def post_arm_enable(payload: dict[str, Any]) -> JSONResponse:
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        ok, message, state = bridge.set_arm_enabled(enabled)
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/arm/move_joints")
+    async def post_arm_move_joints(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            joint_ids = [int(item) for item in list(payload.get("joint_ids") or [])]
+            angles_deg = [float(item) for item in list(payload.get("angles_deg") or [])]
+            duration_ms = int(payload.get("duration_ms", 1000) or 1000)
+            wait = bool(payload.get("wait", False))
+            ok, message, state = bridge.move_arm_joints(
+                joint_ids,
+                angles_deg,
+                duration_ms=duration_ms,
+                wait=wait,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/arm/move_gripper")
+    async def post_arm_move_gripper(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            angle_deg = float(payload.get("angle_deg"))
+            duration_ms = int(payload.get("duration_ms", 1000) or 1000)
+            wait = bool(payload.get("wait", False))
+            ok, message, state = bridge.move_gripper(
+                angle_deg,
+                duration_ms=duration_ms,
+                wait=wait,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/strategy/select")
+    async def post_strategy_select(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            strategy_id = str(payload.get("strategy_id", "") or "").strip()
+            ok, message, state = bridge.set_selected_strategy(strategy_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/planner/select")
+    async def post_planner_select(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            strategy_id = str(payload.get("strategy_id", "") or "").strip()
+            ok, message, state = bridge.set_planner_strategy(strategy_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/gripper/tuning/apply")
+    async def post_gripper_tuning_apply(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            ok, message, state = bridge.apply_gripper_tuning(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/gripper/tuning/action")
+    async def post_gripper_tuning_action(payload: dict[str, Any]) -> JSONResponse:
+        try:
+            action = str(payload.get("action", "") or "").strip()
+            ok, message, state = bridge.run_gripper_tuning_action(action, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/gripper/tuning/save-defaults")
+    async def post_gripper_tuning_save_defaults(payload: dict[str, Any]) -> JSONResponse:
+        ok, message, state = bridge.save_gripper_tuning_defaults(payload)
         status_code = 200 if ok else 409
         return JSONResponse(
             {"ok": ok, "message": message, "state": state},

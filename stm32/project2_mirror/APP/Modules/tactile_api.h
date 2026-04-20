@@ -28,6 +28,13 @@ int tactile_read_block_1038_32(uint8_t dev_addr,
                                uint16_t out_cap,
                                uint16_t *out_len);
 
+int tactile_read_m2020_totals(uint8_t dev_addr,
+                              int8_t *fx_out,
+                              int8_t *fy_out,
+                              uint8_t *fz_out,
+                              uint32_t tx_timeout_ms,
+                              uint32_t rx_timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

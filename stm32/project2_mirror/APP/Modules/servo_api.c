@@ -80,3 +80,50 @@ int servo_move(uint8_t id, uint16_t pos, uint16_t ms)
     return servo_bus_send(txbuf, n, 50);
 }
 
+int servo_read_reg(uint8_t id, uint8_t addr, uint8_t* data_out, uint8_t nbytes)
+{
+    ds_rsp_t rsp;
+
+    if (data_out == NULL || nbytes == 0U) return -1;
+
+    size_t n = ds_pack_read(id, addr, nbytes, txbuf, sizeof(txbuf));
+    if (!n) return -1;
+
+    int rc = servo_bus_txrx(txbuf, n, &rsp, 80);
+    if (rc != 0) return rc;
+    if (rsp.status != 0 || rsp.params_len < nbytes) return -2;
+
+    for (uint8_t i = 0U; i < nbytes; i++) {
+        data_out[i] = rsp.params[i];
+    }
+
+    return 0;
+}
+
+int servo_write_reg8(uint8_t id, uint8_t addr, uint8_t value)
+{
+    uint8_t data[1] = { value };
+    size_t n = ds_pack_write(id, addr, data, 1U, txbuf, sizeof(txbuf));
+    if (!n) return -1;
+    return servo_bus_send(txbuf, n, 50);
+}
+
+int servo_write_reg16(uint8_t id, uint8_t addr, uint16_t value)
+{
+    uint8_t data[2] = {
+        (uint8_t)(value >> 8),
+        (uint8_t)(value & 0xFF),
+    };
+    size_t n = ds_pack_write(id, addr, data, 2U, txbuf, sizeof(txbuf));
+    if (!n) return -1;
+    return servo_bus_send(txbuf, n, 50);
+}
+
+int servo_set_id(uint8_t current_id, uint8_t new_id)
+{
+    if (current_id == 0U || current_id == 0xFEU || current_id > 250U ||
+        new_id == 0U || new_id == 0xFEU || new_id > 250U) {
+        return -1;
+    }
+    return servo_write_reg8(current_id, DS_ADDR_SERVO_ID, new_id);
+}

@@ -19,6 +19,41 @@ $serial.WriteTimeout = $ReadTimeoutMs
 
 $listener = $null
 
+function Read-SerialLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.Ports.SerialPort]$Port,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutMs
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds([Math]::Max(1, $TimeoutMs))
+    $buffer = New-Object System.Text.StringBuilder
+
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $chunk = ""
+        try {
+            $chunk = $Port.ReadExisting()
+        } catch {
+            $chunk = ""
+        }
+
+        if (-not [string]::IsNullOrEmpty($chunk)) {
+            [void]$buffer.Append($chunk)
+            $text = $buffer.ToString()
+            $newlineIndex = $text.IndexOf("`n")
+            if ($newlineIndex -ge 0) {
+                $line = $text.Substring(0, $newlineIndex)
+                return $line.Trim("`r")
+            }
+        }
+
+        Start-Sleep -Milliseconds 20
+    }
+
+    return ""
+}
+
 try {
     $serial.Open()
     Write-Host "stm32 tcp bridge: serial open on $PortName @ $BaudRate"
@@ -73,12 +108,7 @@ try {
 
                 $serial.WriteLine($request)
 
-                $response = ""
-                try {
-                    $response = $serial.ReadLine()
-                } catch [System.TimeoutException] {
-                    $response = ""
-                }
+                $response = Read-SerialLine -Port $serial -TimeoutMs $ReadTimeoutMs
 
                 if ($null -eq $response) {
                     $response = ""

@@ -12,6 +12,7 @@ tactile_web_gateway:
     task_execution_status_topic: "/task/execution_status"
     tactile_mode_service: "/tactile/use_hardware"
     gripper_profile_topic: "/control/gripper/profile_json"
+    gripper_planner_strategy_topic: "/control/gripper/planner_strategy"
     prompt_topic: "/qwen/user_prompt"
     semantic_task_topic: "/qwen/semantic_task"
     semantic_result_topic: "/qwen/semantic_result"
@@ -43,7 +44,7 @@ tactile_web_gateway:
     scene_reset_delay_sec: 0.75
     scene_reset_return_home_after_reset: false
     return_home_joint_ids: [1, 2, 3, 4, 5, 6]
-    return_home_joint_angles_deg: [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936]
+    return_home_joint_angles_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     return_home_duration_ms: 3500
     return_home_wait_for_completion: true
     startup_prepare_home: false
@@ -92,5 +93,14 @@ stm32_bridge_node:
 grasp_profile_node:
   ros__parameters:
     task_goal_topic: "/task/goal"
+    task_execution_status_topic: "/task/execution_status"
+    tactile_topic: "/tactile/raw"
+    pick_status_topic: "/sim/task/pick_status"
     profile_topic: "/control/gripper/profile_json"
+    planner_strategy_topic: "/control/gripper/planner_strategy"
+    default_planner_strategy: "planner_db_only"
     health_topic: "/system/health"
+    database_path: "~/.local/share/programme/grasp_profiles_real.db"
+    trial_artifact_dir: "~/.local/share/programme/grasp_trials_real"
+    aggregation_min_success_trials: 2
+    trial_trace_max_points: 240

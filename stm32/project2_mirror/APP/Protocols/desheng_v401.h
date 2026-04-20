@@ -33,9 +33,13 @@
 #define DS_INST_READ   0x02
 #define DS_INST_WRITE  0x03
 
-// 常用寄存器地址（这两个足够完成最小闭环）
-#define DS_ADDR_GOAL_POS_TIME 0x2A   // 写入：目标位置pos(2B) + 运行时间time(2B)，共4字节
-#define DS_ADDR_PRESENT_POS   0x38   // 读取：当前位置信息(2B)
+// 常用寄存器地址（当前工程已用到/后续调试会用到的子集）
+#define DS_ADDR_SERVO_ID        0x05   // 读写：舵机 ID
+#define DS_ADDR_MAX_TORQUE      0x10   // 读写：最大扭矩
+#define DS_ADDR_TORQUE_ENABLE   0x28   // 读写：扭矩开关
+#define DS_ADDR_GOAL_POS_TIME   0x2A   // 写入：目标位置pos(2B) + 运行时间time(2B)，共4字节
+#define DS_ADDR_PRESENT_CURRENT 0x2E   // 读取：当前电流(2B)
+#define DS_ADDR_PRESENT_POS     0x38   // 读取：当前位置信息(2B)
 
 // 校验计算（命令/回包略不同：命令用 INST，回包用 STATUS）
 uint8_t ds_calc_chk_cmd(uint8_t id, uint8_t len, uint8_t inst,

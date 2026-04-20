@@ -10,6 +10,7 @@
 #include "servo_bus.h"
 #include "tactile_bus.h"
 #include "tactile_api.h"
+#include "gripper_control.h"
 #include "usart.h"
 
 void app_init(void)
@@ -18,9 +19,11 @@ void app_init(void)
     servo_bus_init(&huart1);
     tactile_bus_init(&huart2);
     tactile_api_init();
+    gripper_control_init();
 }
 
 void app_poll(void)
 {
     host_link_poll();
+    gripper_control_poll();
 }

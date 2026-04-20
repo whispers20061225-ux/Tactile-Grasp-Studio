@@ -17,11 +17,16 @@ export type BusyAction =
   | "execute"
   | "replan"
   | "dialog-reset"
+  | "arm-enable"
+  | "arm-move"
+  | "strategy-select"
+  | "planner-select"
   | "return-home"
   | "scene-reset"
   | "debug-open"
   | "tactile-tare"
   | "tactile-clear-tare"
+  | "gripper-tuning"
   | null;
 export type InterventionState = "idle" | "draft" | "applied";
 export type PillTone = UiLevel | "success" | "neutral";
@@ -109,6 +114,37 @@ export const DEFAULT_STATE: UiState = {
     backend_debug: {},
     updated_at: 0,
   },
+  robot: {
+    control_ready: false,
+    enable_ready: false,
+    move_ready: false,
+    return_home_ready: false,
+    joint_ids: [1, 2, 3, 4, 5, 6],
+    joint_count: 6,
+    gripper_joint_id: 6,
+    selected_strategy: "mainline_pick",
+    strategy_options: [
+      {
+        id: "mainline_pick",
+        label: "Mainline Pick",
+        description: "Current integrated visual-language perception and grasp execution chain.",
+      },
+    ],
+    planner_strategy: "planner_db_only",
+    planner_options: [
+      {
+        id: "planner_db_only",
+        label: "DB Only",
+        description: "Rule and rollup planner using the curated object/material database only.",
+      },
+      {
+        id: "planner_retrieval_aug",
+        label: "Retrieval Augmented",
+        description: "DB prior plus nearest successful grasp trials for parameter refinement.",
+      },
+    ],
+    updated_at: 0,
+  },
   tactile: {
     rows: 0,
     cols: 0,
@@ -160,14 +196,61 @@ export const DEFAULT_STATE: UiState = {
     target_label: "",
     object_type: "",
     source: "",
+    planner_strategy: "planner_db_only",
+    planner_source: "database_only",
+    planner_confidence: 0,
+    promote_rollup: true,
+    retrieval: {},
+    retrieval_applied: false,
+    retrieval_neighbor_count: 0,
+    preferred_strategy: "",
+    preferred_grasp_family: "",
     kp: 0,
+    ki: 0,
     kd: 0,
     target_force: 0,
+    target_force_range: [0, 0],
     contact_threshold: 0,
     safety_max: 0,
     confidence: 0,
+    rollup_applied: false,
+    rollup_success_count: 0,
+    rollup_success_rate: 0,
     updated_at: 0,
     raw: {},
+  },
+  gripper_tuning: {
+    enabled: false,
+    supported: false,
+    runtime_ready: false,
+    connection_ready: false,
+    endpoint: "",
+    mode: "idle",
+    servo_id: 6,
+    tactile_dev_addr: 1,
+    close_direction: 1,
+    open_limit_raw: 900,
+    close_limit_raw: 3100,
+    commanded_pos_raw: 0,
+    filtered_force: 0,
+    measured_force_raw: 0,
+    tare_force: 0,
+    target_force: 8,
+    contact_threshold: 4,
+    hard_force_limit: 18,
+    contact_active: false,
+    source_connected: false,
+    kp: 0.8,
+    ki: 0.08,
+    kd: 0,
+    deadband: 2,
+    max_step_per_tick: 6,
+    poll_period_ms: 40,
+    move_time_ms: 100,
+    status_text: "",
+    last_response: "",
+    last_error: "",
+    updated_at: 0,
   },
   health: { healthy: true, issues: [], latest: [], arm_state: {}, updated_at: 0 },
   logs: { stepper_phase: "idle", intervention_badge: false, events: [], updated_at: 0 },
@@ -195,11 +278,13 @@ export function normalizeUiState(next: UiState | Partial<UiState> | null | undef
   const semantic = (isRecord(root.semantic) ? root.semantic : {}) as Partial<UiState["semantic"]>;
   const vision = (isRecord(root.vision) ? root.vision : {}) as Partial<UiState["vision"]>;
   const execution = (isRecord(root.execution) ? root.execution : {}) as Partial<UiState["execution"]>;
+  const robot = (isRecord(root.robot) ? root.robot : {}) as Partial<UiState["robot"]>;
   const tactile = (isRecord(root.tactile) ? root.tactile : {}) as Partial<UiState["tactile"]>;
   const health = (isRecord(root.health) ? root.health : {}) as Partial<UiState["health"]>;
   const logs = (isRecord(root.logs) ? root.logs : {}) as Partial<UiState["logs"]>;
   const uiFeedback = (isRecord(root.ui_feedback) ? root.ui_feedback : {}) as Partial<UiState["ui_feedback"]>;
   const gripperProfile = (isRecord(root.gripper_profile) ? root.gripper_profile : {}) as Partial<NonNullable<UiState["gripper_profile"]>>;
+  const gripperTuning = (isRecord(root.gripper_tuning) ? root.gripper_tuning : {}) as Partial<NonNullable<UiState["gripper_tuning"]>>;
   const defaultDialog = DEFAULT_STATE.dialog ?? {
     session_id: "",
     mode: "auto",
@@ -268,6 +353,33 @@ export function normalizeUiState(next: UiState | Partial<UiState> | null | undef
       task_goal: isRecord(execution.task_goal) ? execution.task_goal as UiState["execution"]["task_goal"] : undefined,
       task_status: isRecord(execution.task_status) ? execution.task_status as UiState["execution"]["task_status"] : undefined,
     },
+  robot: {
+    ...DEFAULT_STATE.robot,
+    ...robot,
+      joint_ids: Array.isArray(robot.joint_ids)
+        ? robot.joint_ids.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+        : DEFAULT_STATE.robot.joint_ids,
+    strategy_options: Array.isArray(robot.strategy_options)
+      ? robot.strategy_options
+          .filter(isRecord)
+          .map((item) => ({
+            id: typeof item.id === "string" ? item.id : "",
+            label: typeof item.label === "string" ? item.label : "",
+            description: typeof item.description === "string" ? item.description : "",
+          }))
+          .filter((item) => item.id && item.label)
+      : DEFAULT_STATE.robot.strategy_options,
+    planner_options: Array.isArray(robot.planner_options)
+      ? robot.planner_options
+          .filter(isRecord)
+          .map((item) => ({
+            id: typeof item.id === "string" ? item.id : "",
+            label: typeof item.label === "string" ? item.label : "",
+            description: typeof item.description === "string" ? item.description : "",
+          }))
+          .filter((item) => item.id && item.label)
+      : DEFAULT_STATE.robot.planner_options,
+  },
     tactile: {
       ...DEFAULT_STATE.tactile,
       ...tactile,
@@ -293,11 +405,21 @@ export function normalizeUiState(next: UiState | Partial<UiState> | null | undef
         ? tactile.torques_tz as number[]
         : DEFAULT_STATE.tactile.torques_tz,
     },
-    gripper_profile: {
-      ...DEFAULT_STATE.gripper_profile,
-      ...gripperProfile,
-      raw: isRecord(gripperProfile.raw) ? gripperProfile.raw : DEFAULT_STATE.gripper_profile?.raw,
-    },
+  gripper_profile: {
+    ...DEFAULT_STATE.gripper_profile,
+    ...gripperProfile,
+    target_force_range: Array.isArray(gripperProfile.target_force_range)
+      ? gripperProfile.target_force_range as number[]
+      : DEFAULT_STATE.gripper_profile?.target_force_range,
+    retrieval: isRecord(gripperProfile.retrieval)
+      ? gripperProfile.retrieval
+      : DEFAULT_STATE.gripper_profile?.retrieval,
+    raw: isRecord(gripperProfile.raw) ? gripperProfile.raw : DEFAULT_STATE.gripper_profile?.raw,
+  },
+    gripper_tuning: {
+      ...DEFAULT_STATE.gripper_tuning,
+      ...gripperTuning,
+    } as NonNullable<UiState["gripper_tuning"]>,
     health: {
       ...DEFAULT_STATE.health,
       ...health,
